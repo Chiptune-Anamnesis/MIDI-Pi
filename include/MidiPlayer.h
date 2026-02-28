@@ -76,6 +76,12 @@ public:
     void setClockEnabled(bool enabled) { clockEnabled = enabled; }
     bool getClockEnabled() { return clockEnabled; }
 
+    // Seamless Loop Mode (for LP1 - zero-gap looping)
+    void setLoopMode(bool enabled) { loopMode = enabled; }
+    bool getLoopMode() { return loopMode; }
+    bool checkLoopRestarted() { if (loopRestarted) { loopRestarted = false; return true; } return false; }
+    void setCleanLoop(bool enabled) { cleanLoop = enabled; }
+
     // SysEx Control
     void setSysexEnabled(bool enabled) { sysexEnabled = enabled; }
     bool getSysexEnabled() { return sysexEnabled; }
@@ -114,6 +120,12 @@ private:
     bool clockEnabled;
     uint32_t lastClockMicros;
     PlayerState lastTransportState; // Track state changes for transport messages
+
+    // Seamless Loop Mode
+    bool loopMode;              // True = seamless loop at end of file
+    volatile bool loopRestarted; // Flag for Core 0 to detect loop restart
+    bool cleanLoop;             // True = skip All Notes Off during loop restart
+    bool loopSkipSetup;         // True = skip redundant setup events at tick 0 after loop restart
 
     // SysEx Control
     bool sysexEnabled; // True = send SysEx messages, False = filter them out

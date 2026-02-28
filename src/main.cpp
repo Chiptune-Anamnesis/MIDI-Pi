@@ -132,6 +132,7 @@ enum MidiSettingsOption {
 
 enum ClockSettingsOption {
     CLOCK_OPTION_ENABLED,
+    CLOCK_OPTION_CLEAN_LOOP,
     CLOCK_OPTION_COUNT
 };
 
@@ -213,6 +214,7 @@ struct ApplicationState {
 
     // MIDI Clock Settings
     bool midiClockEnabled;
+    bool cleanLoopEnabled;  // True = skip All Notes Off during LP1 loop restart
 
     // Visualizer state (simple velocity tracking)
     VisualizerState vizChannels[16];     // Visualizer state per channel
@@ -271,6 +273,7 @@ struct ApplicationState {
         , midiKeyboardChannel(1)
         , midiKeyboardVelocity(50)
         , midiClockEnabled(false)
+        , cleanLoopEnabled(true)  // Clean loop ON by default
         , currentChannelOption(CH_OPTION_CHANNEL)
         , channelOptionActive(false)
         , currentTrackOption(TRACK_OPTION_SAVE)
@@ -360,6 +363,7 @@ bool& midiKeyboardEnabled = appState.midiKeyboardEnabled;
 uint8_t& midiKeyboardChannel = appState.midiKeyboardChannel;
 uint8_t& midiKeyboardVelocity = appState.midiKeyboardVelocity;
 bool& midiClockEnabled = appState.midiClockEnabled;
+bool& cleanLoopEnabled = appState.cleanLoopEnabled;
 VisualizerState* vizChannels = appState.vizChannels;
 uint8_t* channelActivity = appState.channelActivity;
 uint8_t* channelPeak = appState.channelPeak;
@@ -750,6 +754,18 @@ void loop() {
     if (millis() - lastDisplayUpdate > refreshInterval) {
         updateDisplay();
         lastDisplayUpdate = millis();
+    }
+
+    // Keep seamless loop mode in sync with playback mode (no mutex needed for bool)
+    player.setLoopMode(playbackMode == PLAYBACK_LOOP_ONE);
+    player.setCleanLoop(cleanLoopEnabled);
+
+    // Check if seamless loop restarted (for visualizer reset)
+    {
+        ScopedMutex lock(&playerMutex);
+        if (player.checkLoopRestarted()) {
+            resetVisualizer();
+        }
     }
 
     static PlayerState lastPlayerState = STATE_STOPPED;
@@ -2118,25 +2134,37 @@ void handleClockSettingsMode(Button btn) {
     switch (btn) {
         case BTN_RIGHT:
             if (clockOptionActive) {
-                // Active - toggle clock enabled
-                midiClockEnabled = !midiClockEnabled;
-                player.setClockEnabled(midiClockEnabled);
-                // Save settings after change
+                // Active - toggle current option's value
+                if (currentClockOption == CLOCK_OPTION_ENABLED) {
+                    midiClockEnabled = !midiClockEnabled;
+                    player.setClockEnabled(midiClockEnabled);
+                } else if (currentClockOption == CLOCK_OPTION_CLEAN_LOOP) {
+                    cleanLoopEnabled = !cleanLoopEnabled;
+                    player.setCleanLoop(cleanLoopEnabled);
+                }
                 saveGlobalSettings();
+            } else {
+                // Navigate to next option
+                currentClockOption = (ClockSettingsOption)((currentClockOption + 1) % CLOCK_OPTION_COUNT);
             }
-            // No menu navigation needed - only one option
             updateDisplay();
             break;
 
         case BTN_LEFT:
             if (clockOptionActive) {
-                // Active - toggle clock enabled
-                midiClockEnabled = !midiClockEnabled;
-                player.setClockEnabled(midiClockEnabled);
-                // Save settings after change
+                // Active - toggle current option's value
+                if (currentClockOption == CLOCK_OPTION_ENABLED) {
+                    midiClockEnabled = !midiClockEnabled;
+                    player.setClockEnabled(midiClockEnabled);
+                } else if (currentClockOption == CLOCK_OPTION_CLEAN_LOOP) {
+                    cleanLoopEnabled = !cleanLoopEnabled;
+                    player.setCleanLoop(cleanLoopEnabled);
+                }
                 saveGlobalSettings();
+            } else {
+                // Navigate to previous option
+                currentClockOption = (ClockSettingsOption)((currentClockOption - 1 + CLOCK_OPTION_COUNT) % CLOCK_OPTION_COUNT);
             }
-            // No menu navigation needed - only one option
             updateDisplay();
             break;
 
@@ -2436,7 +2464,8 @@ void updateDisplay() {
             break;
 
         case APP_MODE_CLOCK_SETTINGS:
-            display.showClockSettingsMenu(midiClockEnabled, clockOptionActive);
+            display.showClockSettingsMenu(midiClockEnabled, cleanLoopEnabled,
+                                         currentClockOption, clockOptionActive);
             break;
 
         case APP_MODE_VISUALIZER:
@@ -2851,6 +2880,10 @@ bool saveGlobalSettings() {
     sprintf(line, "MIDI_CLOCK=%d\n", midiClockEnabled ? 1 : 0);
     settingsFileObj.write(line);
 
+    // Write Clean Loop setting
+    sprintf(line, "CLEAN_LOOP=%d\n", cleanLoopEnabled ? 1 : 0);
+    settingsFileObj.write(line);
+
     // File automatically closed by ScopedFile destructor
     return true;
 }
@@ -2899,6 +2932,9 @@ bool loadGlobalSettings() {
                 ScopedMutex lock(&playerMutex);
                 player.setClockEnabled(midiClockEnabled);
             }
+        } else if (strncmp(line, "CLEAN_LOOP=", 11) == 0) {
+            cleanLoopEnabled = (atoi(line + 11) != 0);
+            player.setCleanLoop(cleanLoopEnabled);
         }
     }
 

@@ -978,31 +978,51 @@ void DisplayManager::showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled
     display.display();
 }
 
-void DisplayManager::showClockSettingsMenu(bool clockEnabled, bool optionActive) {
+void DisplayManager::showClockSettingsMenu(bool clockEnabled, bool cleanLoopEnabled,
+                                           uint8_t currentOption, bool optionActive) {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
     // Title
     display.setCursor(0, 0);
-    display.print("MIDI CLOCK");
+    display.print("SETTINGS");
 
-    // Clock Enabled setting
+    // Option 0: Clock Enabled
     int16_t y1 = 12;
     display.setCursor(0, y1);
     display.print("ClkOut:");
 
     const char* clockText = clockEnabled ? "ON " : "OFF";
-    int16_t clockWidth = 18;
+    int16_t valWidth = 18;
+    bool clockSelected = (currentOption == 0);
 
-    if (optionActive) {
-        display.fillRect(48, y1 - 1, clockWidth, 9, SSD1306_WHITE);
+    if (clockSelected && optionActive) {
+        display.fillRect(48, y1 - 1, valWidth, 9, SSD1306_WHITE);
         display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    } else {
-        display.drawRect(48, y1 - 1, clockWidth, 9, SSD1306_WHITE);
+    } else if (clockSelected) {
+        display.drawRect(48, y1 - 1, valWidth, 9, SSD1306_WHITE);
     }
     display.setCursor(50, y1);
     display.print(clockText);
+    display.setTextColor(SSD1306_WHITE);
+
+    // Option 1: Clean Loop
+    int16_t y2 = 23;
+    display.setCursor(0, y2);
+    display.print("ClnLP:");
+
+    const char* loopText = cleanLoopEnabled ? "ON " : "OFF";
+    bool loopSelected = (currentOption == 1);
+
+    if (loopSelected && optionActive) {
+        display.fillRect(48, y2 - 1, valWidth, 9, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    } else if (loopSelected) {
+        display.drawRect(48, y2 - 1, valWidth, 9, SSD1306_WHITE);
+    }
+    display.setCursor(50, y2);
+    display.print(loopText);
     display.setTextColor(SSD1306_WHITE);
 
     display.display();

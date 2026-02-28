@@ -18,6 +18,12 @@ MidiPlayer::MidiPlayer(MidiOutput* output) {
     lastClockMicros = 0;
     lastTransportState = STATE_STOPPED;
 
+    // Seamless Loop Mode
+    loopMode = false;
+    loopRestarted = false;
+    cleanLoop = true;
+    loopSkipSetup = false;
+
     // SysEx Control
     sysexEnabled = true; // SysEx enabled by default
 
@@ -41,6 +47,7 @@ bool MidiPlayer::loadFile(FatFile* file) {
 
     // Stop current playback
     stop();
+    loopSkipSetup = false;
 
     // Reset playback position for new file (in case stop() returned early)
     ticksElapsed = 0;
@@ -146,6 +153,7 @@ void MidiPlayer::stop(bool resetToBeginning) {
     if (state == STATE_STOPPED) return;
 
     state = STATE_STOPPED;
+    loopSkipSetup = false;
 
     // Send MIDI Clock stop message
     if (clockEnabled) {
@@ -197,10 +205,29 @@ void MidiPlayer::resetMidiDevice() {
 void MidiPlayer::update() {
     if (state != STATE_PLAYING) return;
     if (!eventReady) {
-        // End of file - set flag before stopping
-        reachedEnd = true;
-        stop();
-        return;
+        // End of file
+        if (loopMode) {
+            // Seamless loop - restart from cached buffers (no SD I/O)
+            if (!cleanLoop) stopAllNotes();  // Skip CC 123 when clean loop enabled
+            if (parser.resetForLoop()) {
+                ticksElapsed = 0;
+                eventReady = parser.readNextEvent(nextEvent);
+                lastUpdateMicros = micros();
+                lastClockMicros = micros();
+                loopRestarted = true;
+                if (cleanLoop) loopSkipSetup = true;
+                calculateMicrosecondsPerTick();
+                // Fall through to event processing below
+            } else {
+                reachedEnd = true;
+                stop();
+                return;
+            }
+        } else {
+            reachedEnd = true;
+            stop();
+            return;
+        }
     }
 
     // CRITICAL: Guard against division by zero if tempo not yet calculated
@@ -255,6 +282,11 @@ void MidiPlayer::update() {
                 break;
             }
 
+            // Clear loopSkipSetup when we reach events beyond tick 0
+            if (loopSkipSetup && nextEvent.absoluteTime > 0) {
+                loopSkipSetup = false;
+            }
+
             // Send the MIDI event
             sendMidiEvent(nextEvent);
 
@@ -265,6 +297,21 @@ void MidiPlayer::update() {
 
             if (!eventReady) {
                 // End of file
+                if (loopMode) {
+                    // Seamless loop - restart from cached buffers (no SD I/O)
+                    if (!cleanLoop) stopAllNotes();  // Skip CC 123 when clean loop enabled
+                    if (parser.resetForLoop()) {
+                        ticksElapsed = 0;
+                        eventReady = parser.readNextEvent(nextEvent);
+                        lastUpdateMicros = micros();
+                        lastClockMicros = micros();
+                        loopRestarted = true;
+                        if (cleanLoop) loopSkipSetup = true;
+                        calculateMicrosecondsPerTick();
+                        updateStartMicros = micros();  // Fresh time budget
+                        continue;  // Process tick-0 events immediately
+                    }
+                }
                 break;
             }
         }
@@ -283,6 +330,14 @@ void MidiPlayer::sendMidiEvent(const MidiEvent& event) {
     }
 
     if (event.isMetaEvent) return; // Don't send other meta events
+
+    // Skip redundant non-note UART events at tick 0 during clean loop restart
+    // Device already has correct program/CC state from previous loop iteration
+    if (loopSkipSetup) {
+        if (event.type != MIDI_NOTE_ON && event.type != MIDI_NOTE_OFF) {
+            return;
+        }
+    }
 
     // CRITICAL: Validate channel is in valid range (0-15)
     // Corrupted MIDI files could have invalid channels causing buffer overruns

@@ -135,6 +135,10 @@ struct TrackState {
     uint16_t bufferPos;      // Current position in buffer
     uint16_t bufferSize;     // How much valid data in buffer
     uint32_t bufferFilePos;  // File position of start of buffer
+
+    // Loop restart cache (initial buffer snapshot for zero-SD-I/O restart)
+    uint8_t loopBuffer[TRACK_BUFFER_SIZE];
+    uint16_t loopBufferSize;
 };
 
 class MidiFileParser {
@@ -145,7 +149,8 @@ public:
     bool open(const char* filename, FatFile* file);
     void close();
     bool readNextEvent(MidiEvent& event);
-    bool reset();  // Returns false if seek fails
+    bool reset();          // Returns false if seek fails
+    bool resetForLoop();   // Zero-SD-I/O restart for seamless looping
 
     MidiFileInfo getFileInfo() { return fileInfo; }
     uint32_t getTotalTicks();
@@ -182,6 +187,8 @@ private:
     bool allTracksEnded;
     uint32_t fileLengthTicks; // Total length of file in ticks
     uint16_t sysexCount;      // Number of SysEx messages found during scan
+    bool loopStateSaved;      // True if initial buffer state has been cached
+    uint32_t initialTempo;    // Saved initial tempo for loop restart
 
     // Helper functions
     uint32_t readVariableLength();
@@ -197,6 +204,9 @@ private:
     uint8_t readTrackByte(uint8_t trackNum);
     uint32_t readTrackVariableLength(uint8_t trackNum);
     bool fillTrackBuffer(uint8_t trackNum);
+
+    // Loop state caching
+    void saveLoopState();
 
     // Calculate total file length
     void calculateFileLength();

@@ -83,7 +83,8 @@ public:
     void showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled, uint8_t keyboardChannel, uint8_t keyboardVelocity, uint8_t currentOption, bool optionActive);
 
     // Clock Settings menu display
-    void showClockSettingsMenu(bool clockEnabled, bool optionActive);
+    void showClockSettingsMenu(bool clockEnabled, bool cleanLoopEnabled,
+                              uint8_t currentOption, bool optionActive);
 
     // Routing menu display
     void showRoutingMenu(uint8_t selectedChannel, uint8_t* channelRouting, uint8_t currentOption, bool optionActive);

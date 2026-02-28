@@ -6,6 +6,8 @@ MidiFileParser::MidiFileParser() {
     allTracksEnded = false;
     fileLengthTicks = 0;
     sysexCount = 0;
+    loopStateSaved = false;
+    initialTempo = 500000;
     memset(&fileInfo, 0, sizeof(MidiFileInfo));
     memset(tracks, 0, sizeof(tracks));
     fileInfo.tempo = 500000; // Default 120 BPM
@@ -181,11 +183,16 @@ bool MidiFileParser::initializeTracks() {
         }
     }
 
-    // Now pre-read first event from each track
+    // Fill initial buffers for all tracks
     for (uint8_t i = 0; i < numTracks; i++) {
-        // Fill initial buffer for this track
         fillTrackBuffer(i);
+    }
 
+    // Cache initial buffer state for seamless loop restart (before event parsing)
+    saveLoopState();
+
+    // Now parse first event from each track (reads from buffer, no SD I/O)
+    for (uint8_t i = 0; i < numTracks; i++) {
         if (readTrackEvent(i, tracks[i].nextEvent)) {
             tracks[i].eventReady = true;
         }
@@ -385,6 +392,40 @@ bool MidiFileParser::reset() {
     readMidiHeader();
     initializeTracks();
     allTracksEnded = false;
+    return true;
+}
+
+void MidiFileParser::saveLoopState() {
+    for (uint8_t i = 0; i < numTracks; i++) {
+        memcpy(tracks[i].loopBuffer, tracks[i].buffer, tracks[i].bufferSize);
+        tracks[i].loopBufferSize = tracks[i].bufferSize;
+    }
+    initialTempo = fileInfo.tempo;
+    loopStateSaved = true;
+}
+
+bool MidiFileParser::resetForLoop() {
+    if (!loopStateSaved) return reset();  // Fallback to full reset
+
+    for (uint8_t i = 0; i < numTracks; i++) {
+        // Restore buffer from cache (no SD I/O)
+        memcpy(tracks[i].buffer, tracks[i].loopBuffer, tracks[i].loopBufferSize);
+        tracks[i].bufferSize = tracks[i].loopBufferSize;
+        tracks[i].bufferPos = 0;
+        tracks[i].bufferFilePos = 0;
+        tracks[i].filePosition = 0;
+
+        // Reset playback state
+        tracks[i].currentTick = 0;
+        tracks[i].runningStatus = 0;
+        tracks[i].endOfTrack = false;
+
+        // Re-parse first event from restored buffer (pure CPU, no SD I/O)
+        tracks[i].eventReady = readTrackEvent(i, tracks[i].nextEvent);
+    }
+
+    allTracksEnded = false;
+    fileInfo.tempo = initialTempo;
     return true;
 }
 

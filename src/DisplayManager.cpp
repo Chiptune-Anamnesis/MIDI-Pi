@@ -97,46 +97,94 @@ void DisplayManager::showConfirmation(const char* message, bool yesSelected) {
     display.display();
 }
 
-void DisplayManager::showFileBrowser(FileBrowser* browser) {
-    if (!browser) return;
-
+void DisplayManager::showFileBrowser(const char* folderName, const char* fileName,
+                                     uint16_t fileIndex, uint16_t fileCount,
+                                     const char* currentPath,
+                                     uint8_t selectedField, bool fieldActive) {
     display.clearDisplay();
     display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
 
-    display.setCursor(0, 0);
-    display.print(browser->getCurrentIndex() + 1);
-    display.print("/");
-    display.print(browser->getFileCount());
-    display.print(" ");
+    // Row 1 (y=1): "Dir:" + folder name with highlight box
+    int16_t y1 = 1;
+    display.setCursor(0, y1);
+    display.print("Dir:");
 
-    FileEntry* current = browser->getCurrentFile();
-    if (current) {
-        if (current->isDirectory) {
-            display.print("[D]");
-        }
+    bool folderSelected = (selectedField == 0);
+    int16_t folderBoxX = 26;
+    int16_t folderBoxW = 128 - folderBoxX;
 
-        int remainingWidth = 21 - 6;
-        if (strlen(current->filename) > remainingWidth) {
-            char truncated[16];
-            strncpy(truncated, current->filename, remainingWidth - 3);
-            truncated[remainingWidth - 3] = '\0';
-            strcat(truncated, "...");
-            display.print(truncated);
-        } else {
-            display.print(current->filename);
-        }
+    if (folderSelected && fieldActive) {
+        display.fillRect(folderBoxX, y1 - 1, folderBoxW, 9, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    } else if (folderSelected) {
+        display.drawRect(folderBoxX, y1 - 1, folderBoxW, 9, SSD1306_WHITE);
     }
 
-    display.setCursor(0, 12);
-    display.print("OK:Select MODE:Back");
-
-    display.setCursor(0, 24);
-    const char* path = browser->getCurrentPath();
-    if (strlen(path) > 21) {
-        display.print("...");
-        display.print(path + strlen(path) - 18);
+    display.setCursor(folderBoxX + 2, y1);
+    // Truncate folder name to fit
+    int16_t maxFolderChars = (folderBoxW - 4) / 6;
+    if ((int16_t)strlen(folderName) > maxFolderChars) {
+        char trunc[22];
+        strncpy(trunc, folderName, maxFolderChars - 2);
+        trunc[maxFolderChars - 2] = '\0';
+        strcat(trunc, "..");
+        display.print(trunc);
     } else {
-        display.print(path);
+        display.print(folderName);
+    }
+    display.setTextColor(SSD1306_WHITE);
+
+    // Row 2 (y=12): "N/M" + filename with highlight box
+    int16_t y2 = 12;
+    display.setCursor(0, y2);
+
+    bool fileSelected = (selectedField == 1);
+
+    if (fileCount > 0) {
+        // Print file index
+        char indexStr[12];
+        snprintf(indexStr, sizeof(indexStr), "%d/%d", fileIndex + 1, fileCount);
+        display.print(indexStr);
+
+        int16_t indexWidth = strlen(indexStr) * 6 + 2;
+        int16_t fileBoxX = indexWidth;
+        int16_t fileBoxW = 128 - fileBoxX;
+
+        if (fileSelected && fieldActive) {
+            display.fillRect(fileBoxX, y2 - 1, fileBoxW, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (fileSelected) {
+            display.drawRect(fileBoxX, y2 - 1, fileBoxW, 9, SSD1306_WHITE);
+        }
+
+        display.setCursor(fileBoxX + 2, y2);
+        int16_t maxFileChars = (fileBoxW - 4) / 6;
+        if (fileName && (int16_t)strlen(fileName) > maxFileChars) {
+            char trunc[22];
+            strncpy(trunc, fileName, maxFileChars - 2);
+            trunc[maxFileChars - 2] = '\0';
+            strcat(trunc, "..");
+            display.print(trunc);
+        } else if (fileName) {
+            display.print(fileName);
+        }
+    } else {
+        display.print("No files");
+        if (fileSelected) {
+            display.drawRect(0, y2 - 1, 50, 9, SSD1306_WHITE);
+        }
+    }
+    display.setTextColor(SSD1306_WHITE);
+
+    // Row 3 (y=24): Current path
+    int16_t y3 = 24;
+    display.setCursor(0, y3);
+    if (strlen(currentPath) > 21) {
+        display.print("...");
+        display.print(currentPath + strlen(currentPath) - 18);
+    } else {
+        display.print(currentPath);
     }
 
     display.display();

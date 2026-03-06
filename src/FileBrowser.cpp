@@ -4,6 +4,8 @@ FileBrowser::FileBrowser() {
     sd = nullptr;
     fileCount = 0;
     currentIndex = 0;
+    subfolderCount = 0;
+    currentSubfolderIndex = 0;
     strcpy(currentPath, "/");
     strcpy(rootPath, "/MIDI");
 }
@@ -14,6 +16,7 @@ bool FileBrowser::begin(SdFat* sdCard) {
 
     // Set initial path to root MIDI folder
     setRootPath("/MIDI");
+    scanSubfolders();
     return scanCurrentDirectory();
 }
 
@@ -70,10 +73,6 @@ bool FileBrowser::scanCurrentDirectory() {
         // Get filename
         file.getName(entry.filename, MAX_FILENAME_LENGTH);
 
-        // Build full path
-        snprintf(entry.fullPath, MAX_PATH_LENGTH, "%s/%s",
-                 currentPath, entry.filename);
-
         // Check if directory
         entry.isDirectory = file.isDir();
         entry.fileSize = file.fileSize();
@@ -84,14 +83,14 @@ bool FileBrowser::scanCurrentDirectory() {
             continue;
         }
 
-        // Skip config directory
-        if (entry.isDirectory && strcasecmp(entry.filename, "config") == 0) {
+        // Skip directories — subfolders are handled separately
+        if (entry.isDirectory) {
             file.close();
             continue;
         }
 
-        // Only add MIDI files or directories
-        if (entry.isDirectory || isMidiFile(entry.filename)) {
+        // Only add MIDI files
+        if (isMidiFile(entry.filename)) {
             fileCount++;
         }
 
@@ -107,22 +106,10 @@ bool FileBrowser::scanCurrentDirectory() {
 }
 
 void FileBrowser::sortFiles() {
-    // Simple bubble sort - directories first, then alphabetically
+    // Simple bubble sort - alphabetically
     for (uint16_t i = 0; i < fileCount - 1; i++) {
         for (uint16_t j = 0; j < fileCount - i - 1; j++) {
-            bool swap = false;
-
-            // Directories come first
-            if (!files[j].isDirectory && files[j + 1].isDirectory) {
-                swap = true;
-            } else if (files[j].isDirectory == files[j + 1].isDirectory) {
-                // Same type, sort alphabetically
-                if (strcasecmp(files[j].filename, files[j + 1].filename) > 0) {
-                    swap = true;
-                }
-            }
-
-            if (swap) {
+            if (strcasecmp(files[j].filename, files[j + 1].filename) > 0) {
                 FileEntry temp = files[j];
                 files[j] = files[j + 1];
                 files[j + 1] = temp;
@@ -193,5 +180,107 @@ bool FileBrowser::openFile(FatFile* file) {
     FileEntry* current = getCurrentFile();
     if (!current || current->isDirectory) return false;
 
-    return file->open(current->fullPath, O_RDONLY);
+    char path[MAX_PATH_LENGTH];
+    getFullPath(current, path, sizeof(path));
+    return file->open(path, O_RDONLY);
+}
+
+void FileBrowser::getFullPath(const FileEntry* entry, char* outPath, size_t maxLen) {
+    snprintf(outPath, maxLen, "%s/%s", currentPath, entry->filename);
+}
+
+void FileBrowser::scanSubfolders() {
+    subfolderCount = 0;
+    currentSubfolderIndex = 0;
+
+    // Entry 0 is always root (files directly in /MIDI)
+    strncpy(subfolderNames[0], "/", MAX_FILENAME_LENGTH - 1);
+    subfolderNames[0][MAX_FILENAME_LENGTH - 1] = '\0';
+    subfolderCount = 1;
+
+    if (!sd) return;
+
+    FatFile dir;
+    if (!dir.open(rootPath)) return;
+
+    FatFile file;
+    while (file.openNext(&dir, O_RDONLY)) {
+        if (subfolderCount >= MAX_SUBFOLDERS) {
+            file.close();
+            break;
+        }
+
+        if (!file.isDir()) {
+            file.close();
+            continue;
+        }
+
+        char name[MAX_FILENAME_LENGTH];
+        file.getName(name, MAX_FILENAME_LENGTH);
+
+        // Skip hidden directories and config
+        if (name[0] == '.' || strcasecmp(name, "config") == 0) {
+            file.close();
+            continue;
+        }
+
+        strncpy(subfolderNames[subfolderCount], name, MAX_FILENAME_LENGTH - 1);
+        subfolderNames[subfolderCount][MAX_FILENAME_LENGTH - 1] = '\0';
+        subfolderCount++;
+
+        file.close();
+    }
+
+    dir.close();
+
+    // Sort subfolders alphabetically (skip entry 0 which is always "/")
+    sortSubfolders();
+}
+
+void FileBrowser::sortSubfolders() {
+    if (subfolderCount <= 2) return; // 0=root + at most 1 subfolder, nothing to sort
+
+    for (uint16_t i = 1; i < subfolderCount - 1; i++) {
+        for (uint16_t j = 1; j < subfolderCount - i; j++) {
+            if (strcasecmp(subfolderNames[j], subfolderNames[j + 1]) > 0) {
+                char temp[MAX_FILENAME_LENGTH];
+                strncpy(temp, subfolderNames[j], MAX_FILENAME_LENGTH);
+                strncpy(subfolderNames[j], subfolderNames[j + 1], MAX_FILENAME_LENGTH);
+                strncpy(subfolderNames[j + 1], temp, MAX_FILENAME_LENGTH);
+            }
+        }
+    }
+}
+
+void FileBrowser::selectNextSubfolder() {
+    if (subfolderCount == 0) return;
+    currentSubfolderIndex = (currentSubfolderIndex + 1) % subfolderCount;
+    navigateToCurrentSubfolder();
+}
+
+void FileBrowser::selectPreviousSubfolder() {
+    if (subfolderCount == 0) return;
+    if (currentSubfolderIndex == 0) {
+        currentSubfolderIndex = subfolderCount - 1;
+    } else {
+        currentSubfolderIndex--;
+    }
+    navigateToCurrentSubfolder();
+}
+
+const char* FileBrowser::getCurrentSubfolderName() {
+    if (currentSubfolderIndex >= subfolderCount) return "/";
+    return subfolderNames[currentSubfolderIndex];
+}
+
+void FileBrowser::navigateToCurrentSubfolder() {
+    if (currentSubfolderIndex == 0) {
+        // Root: files directly in /MIDI
+        strncpy(currentPath, rootPath, MAX_PATH_LENGTH - 1);
+        currentPath[MAX_PATH_LENGTH - 1] = '\0';
+    } else {
+        snprintf(currentPath, MAX_PATH_LENGTH, "%s/%s",
+                 rootPath, subfolderNames[currentSubfolderIndex]);
+    }
+    scanCurrentDirectory();
 }

@@ -136,6 +136,12 @@ enum ClockSettingsOption {
     CLOCK_OPTION_COUNT
 };
 
+enum BrowseField {
+    BROWSE_FOLDER,
+    BROWSE_FILE,
+    BROWSE_FIELD_COUNT
+};
+
 enum RoutingMenuOption {
     ROUTING_OPTION_SAVE,
     ROUTING_OPTION_DELETE,
@@ -233,6 +239,10 @@ struct ApplicationState {
     ClockSettingsOption currentClockOption;
     bool clockOptionActive;
 
+    // Browse mode state
+    uint8_t currentBrowseField;  // 0=folder, 1=file
+    bool browseFieldActive;
+
     // Confirmation dialog state
     bool showingConfirmation;
     ConfirmAction pendingConfirmAction;
@@ -284,6 +294,8 @@ struct ApplicationState {
         , midiOptionActive(false)
         , currentClockOption(CLOCK_OPTION_ENABLED)
         , clockOptionActive(false)
+        , currentBrowseField(BROWSE_FOLDER)
+        , browseFieldActive(false)
         , showingConfirmation(false)
         , pendingConfirmAction(CONFIRM_NONE)
         , confirmSelection(false)
@@ -377,6 +389,8 @@ MidiSettingsOption& currentMidiOption = appState.currentMidiOption;
 bool& midiOptionActive = appState.midiOptionActive;
 ClockSettingsOption& currentClockOption = appState.currentClockOption;
 bool& clockOptionActive = appState.clockOptionActive;
+uint8_t& currentBrowseField = appState.currentBrowseField;
+bool& browseFieldActive = appState.browseFieldActive;
 bool& showingConfirmation = appState.showingConfirmation;
 ConfirmAction& pendingConfirmAction = appState.pendingConfirmAction;
 bool& confirmSelection = appState.confirmSelection;
@@ -833,47 +847,63 @@ void loop() {
 void handleBrowseMode(Button btn) {
     switch (btn) {
         case BTN_LEFT:
-            // Previous file/folder
-            browser.selectPrevious();
+            if (browseFieldActive) {
+                if (currentBrowseField == BROWSE_FOLDER) {
+                    browser.selectPreviousSubfolder();
+                } else {
+                    browser.selectPrevious();
+                }
+            } else {
+                currentBrowseField = (currentBrowseField + BROWSE_FIELD_COUNT - 1) % BROWSE_FIELD_COUNT;
+            }
             updateDisplay();
             break;
 
         case BTN_RIGHT:
-            // Next file/folder
-            browser.selectNext();
+            if (browseFieldActive) {
+                if (currentBrowseField == BROWSE_FOLDER) {
+                    browser.selectNextSubfolder();
+                } else {
+                    browser.selectNext();
+                }
+            } else {
+                currentBrowseField = (currentBrowseField + 1) % BROWSE_FIELD_COUNT;
+            }
             updateDisplay();
             break;
 
         case BTN_OK:
-            // Enter directory or load file (don't play yet)
-            {
-                FileEntry* current = browser.getCurrentFile();
-                if (current) {
-                    if (current->isDirectory) {
-                        browser.enterDirectory();
-                        updateDisplay();
-                    } else {
-                        // Load file only (don't play)
+            if (browseFieldActive) {
+                if (currentBrowseField == BROWSE_FILE) {
+                    // Load and play the selected file
+                    FileEntry* current = browser.getCurrentFile();
+                    if (current) {
+                        browseFieldActive = false;
                         if (loadFileOnly()) {
                             lastPlayedFile = current;
                             currentMode = APP_MODE_PLAY;
                             display.setMode(MODE_PLAYBACK);
-                            updateDisplay();
                         }
                     }
+                } else {
+                    // Folder: exit edit mode (folder already set)
+                    browseFieldActive = false;
                 }
+            } else {
+                browseFieldActive = true;
             }
+            updateDisplay();
             break;
 
-        // BTN_PLAY is handled globally - not here
-
-        // BTN_STOP is handled globally - not here
-
         case BTN_MODE:
-            // Return to player screen
-            currentMode = APP_MODE_PLAY;
-            display.setMode(MODE_PLAYBACK);
-            updateDisplay();
+            if (browseFieldActive) {
+                browseFieldActive = false;
+                updateDisplay();
+            } else {
+                currentMode = APP_MODE_PLAY;
+                display.setMode(MODE_PLAYBACK);
+                updateDisplay();
+            }
             break;
 
         default:
@@ -2379,7 +2409,18 @@ void updateDisplay() {
 
     switch (currentMode) {
         case APP_MODE_BROWSE:
-            display.showFileBrowser(&browser);
+            {
+                FileEntry* currentFile = browser.getCurrentFile();
+                display.showFileBrowser(
+                    browser.getCurrentSubfolderName(),
+                    currentFile ? currentFile->filename : nullptr,
+                    browser.getCurrentIndex(),
+                    browser.getFileCount(),
+                    browser.getCurrentPath(),
+                    currentBrowseField,
+                    browseFieldActive
+                );
+            }
             break;
 
         case APP_MODE_PLAY:
@@ -3027,10 +3068,11 @@ bool loadFileOnly() {
     // This is done OUTSIDE mutex to avoid blocking Core 1, but player must be fully stopped first
     // WARNING: For large files not in cache, this can take several seconds and will freeze UI!
     // Check if file is in cache to decide whether to show loading message
-    const char* filename = strrchr(entry->fullPath, '/');
-    filename = filename ? filename + 1 : entry->fullPath;
+    char entryFullPath[MAX_PATH_LENGTH];
+    browser.getFullPath(entry, entryFullPath, sizeof(entryFullPath));
+    const char* filename = entry->filename;
     FatFile tempFile;
-    if (tempFile.open(entry->fullPath, O_RDONLY)) {
+    if (tempFile.open(entryFullPath, O_RDONLY)) {
         uint16_t date, time;
         tempFile.getModifyDateTime(&date, &time);
         uint32_t modtime = ((uint32_t)date << 16) | time;
@@ -3043,7 +3085,7 @@ bool loadFileOnly() {
         }
     }
 
-    calculateAndCacheFileLength(entry->fullPath, player.getParser());
+    calculateAndCacheFileLength(entryFullPath, player.getParser());
 
     // NOW apply tempo and channel settings AFTER file scanning - with mutex protection
     // We temporarily set tempo to 100% so we can read the file's actual BPM

@@ -11,6 +11,9 @@ Standalone MIDI file player for Raspberry Pi Pico (RP2040). Plays Standard MIDI 
 - **Channel Mixer**: 16-channel mute/solo, program/pan/volume/transpose override, routing
 - **Real-time Visualizer**: 16-channel animated VU meters with bubbles
 - **MIDI I/O**: Hardware UART, MIDI Thru, Keyboard mode, Clock output
+- **Seamless Loop**: When ClnLp is ON. *v1.4.0*
+- **1024 Files** Supports up to 1024 MIDI files. *v1.4.0*
+- **First Level Subfolder Suppot** MIDI/Bass, MIDI/Arp, etc. *v1.4.0*
 - **Dual-Core**: UI on Core 0, MIDI timing on Core 1 (microsecond precision)
 
 ## Hardware

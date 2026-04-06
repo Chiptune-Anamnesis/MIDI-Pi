@@ -237,15 +237,14 @@ void MidiPlayer::update() {
 
     // Send MIDI Clock ticks (24 per quarter note)
     if (clockEnabled) {
-        uint16_t bpm = getCurrentBPM();
-        // Guard against division by zero if BPM is invalid
-        if (bpm == 0) bpm = 120; // Default to 120 BPM
-        // Calculate microseconds per clock tick: (60,000,000 / BPM) / 24
-        uint32_t microsecondsPerClock = (60000000 / bpm) / 24;
+        // Derive clock interval directly from microsecondsPerTick (no lossy BPM round-trip)
+        // microsecondsPerClock = (microsecondsPerTick * ticksPerQuarter) / 24
+        MidiFileInfo info = parser.getFileInfo();
+        uint32_t microsecondsPerClock = ((uint64_t)microsecondsPerTick * info.ticksPerQuarter) / 24;
 
-        if (currentMicros - lastClockMicros >= microsecondsPerClock) {
+        if (microsecondsPerClock > 0 && currentMicros - lastClockMicros >= microsecondsPerClock) {
             midiOut->sendClock();
-            lastClockMicros = currentMicros;
+            lastClockMicros += microsecondsPerClock;  // Accumulate for drift-free timing
         }
     }
 

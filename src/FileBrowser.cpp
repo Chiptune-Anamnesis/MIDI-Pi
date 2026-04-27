@@ -50,6 +50,14 @@ bool FileBrowser::isMidiFile(const char* filename) {
     return false;
 }
 
+bool FileBrowser::isSysexFile(const char* filename) {
+    size_t len = strlen(filename);
+    if (len < 4) return false;
+
+    const char* ext = filename + len - 4;
+    return strcasecmp(ext, ".syx") == 0;
+}
+
 bool FileBrowser::scanCurrentDirectory() {
     if (!sd) return false;
 
@@ -89,8 +97,8 @@ bool FileBrowser::scanCurrentDirectory() {
             continue;
         }
 
-        // Only add MIDI files
-        if (isMidiFile(entry.filename)) {
+        // Only add MIDI or SysEx files
+        if (isPlayableFile(entry.filename)) {
             fileCount++;
         }
 
@@ -130,6 +138,12 @@ void FileBrowser::selectPrevious() {
     } else {
         currentIndex--;
     }
+}
+
+bool FileBrowser::setCurrentIndex(uint16_t idx) {
+    if (fileCount == 0 || idx >= fileCount) return false;
+    currentIndex = idx;
+    return true;
 }
 
 void FileBrowser::enterDirectory() {

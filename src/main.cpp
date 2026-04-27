@@ -127,6 +127,10 @@ enum MidiSettingsOption {
     MIDI_OPTION_KEYBOARD,
     MIDI_OPTION_KEYBOARD_CH,
     MIDI_OPTION_KEYBOARD_VEL,
+    MIDI_OPTION_REMOTE,        // Master enable for Bank+PC remote control
+    MIDI_OPTION_REMOTE_AP,     // Auto-play on select
+    MIDI_OPTION_REMOTE_TR,     // Transport messages enable
+    MIDI_OPTION_REMOTE_CH,     // Channel (0=OMNI, 1-16)
     MIDI_OPTION_COUNT
 };
 
@@ -218,6 +222,12 @@ struct ApplicationState {
     uint8_t midiKeyboardChannel;
     uint8_t midiKeyboardVelocity;  // 1-100, 50 = default
 
+    // MIDI Remote Control Settings (Bank+PC file selection, transport messages)
+    bool midiRemoteEnabled;
+    bool midiRemoteAutoPlay;
+    bool midiRemoteTransportEnabled;
+    uint8_t midiRemoteChannel;  // 0=OMNI, 1-16
+
     // MIDI Clock Settings
     bool midiClockEnabled;
     bool cleanLoopEnabled;  // True = skip All Notes Off during LP1 loop restart
@@ -282,6 +292,10 @@ struct ApplicationState {
         , midiKeyboardEnabled(false)
         , midiKeyboardChannel(1)
         , midiKeyboardVelocity(50)
+        , midiRemoteEnabled(false)
+        , midiRemoteAutoPlay(true)
+        , midiRemoteTransportEnabled(true)
+        , midiRemoteChannel(0)  // OMNI
         , midiClockEnabled(false)
         , cleanLoopEnabled(true)  // Clean loop ON by default
         , currentChannelOption(CH_OPTION_CHANNEL)
@@ -374,6 +388,10 @@ bool& midiThruEnabled = appState.midiThruEnabled;
 bool& midiKeyboardEnabled = appState.midiKeyboardEnabled;
 uint8_t& midiKeyboardChannel = appState.midiKeyboardChannel;
 uint8_t& midiKeyboardVelocity = appState.midiKeyboardVelocity;
+bool& midiRemoteEnabled = appState.midiRemoteEnabled;
+bool& midiRemoteAutoPlay = appState.midiRemoteAutoPlay;
+bool& midiRemoteTransportEnabled = appState.midiRemoteTransportEnabled;
+uint8_t& midiRemoteChannel = appState.midiRemoteChannel;
 bool& midiClockEnabled = appState.midiClockEnabled;
 bool& cleanLoopEnabled = appState.cleanLoopEnabled;
 VisualizerState* vizChannels = appState.vizChannels;
@@ -414,6 +432,8 @@ void updateChannelLevels();
 void resetVisualizer();
 bool loadAndPlayFile();
 bool loadFileOnly();
+bool sendSysexFile(FileEntry* entry);
+void pollMidiRemote();
 void sendProgramChanges();
 void sendChannelVolumes();
 void sendChannelPan();
@@ -536,6 +556,9 @@ void setup() {
 void loop() {
     // MIDI processing moved to Core 1 for better timing
     // Core 0 handles UI, display, and file operations
+
+    // Drain any pending MIDI remote control requests (Core 1 → Core 0)
+    pollMidiRemote();
 
     // Read input with repeat/acceleration for navigation
     // Disable acceleration for BPM option (use regular button presses only)
@@ -875,14 +898,22 @@ void handleBrowseMode(Button btn) {
         case BTN_OK:
             if (browseFieldActive) {
                 if (currentBrowseField == BROWSE_FILE) {
-                    // Load and play the selected file
                     FileEntry* current = browser.getCurrentFile();
                     if (current) {
                         browseFieldActive = false;
-                        if (loadFileOnly()) {
-                            lastPlayedFile = current;
-                            currentMode = APP_MODE_PLAY;
-                            display.setMode(MODE_PLAYBACK);
+                        // Check extension: .syx → bulk SysEx send, .mid/.midi → load and play
+                        size_t nameLen = strlen(current->filename);
+                        bool isSyx = (nameLen >= 4 &&
+                                      strcasecmp(current->filename + nameLen - 4, ".syx") == 0);
+                        if (isSyx) {
+                            sendSysexFile(current);
+                            // Stay in browser after sending
+                        } else {
+                            if (loadFileOnly()) {
+                                lastPlayedFile = current;
+                                currentMode = APP_MODE_PLAY;
+                                display.setMode(MODE_PLAYBACK);
+                            }
                         }
                     }
                 } else {
@@ -2064,6 +2095,27 @@ void handleMidiSettingsMode(Button btn) {
                         }
                         break;
 
+                    case MIDI_OPTION_REMOTE:
+                        midiRemoteEnabled = !midiRemoteEnabled;
+                        midiIn.setRemoteEnabled(midiRemoteEnabled);
+                        break;
+
+                    case MIDI_OPTION_REMOTE_AP:
+                        midiRemoteAutoPlay = !midiRemoteAutoPlay;
+                        midiIn.setRemoteAutoPlay(midiRemoteAutoPlay);
+                        break;
+
+                    case MIDI_OPTION_REMOTE_TR:
+                        midiRemoteTransportEnabled = !midiRemoteTransportEnabled;
+                        midiIn.setRemoteTransportEnabled(midiRemoteTransportEnabled);
+                        break;
+
+                    case MIDI_OPTION_REMOTE_CH:
+                        // 0=OMNI, 1-16
+                        midiRemoteChannel = (midiRemoteChannel + 1) % 17;
+                        midiIn.setRemoteChannel(midiRemoteChannel);
+                        break;
+
                     default:
                         break;
                 }
@@ -2111,6 +2163,27 @@ void handleMidiSettingsMode(Button btn) {
                             midiKeyboardVelocity--;
                             midiIn.setKeyboardVelocity(midiKeyboardVelocity);
                         }
+                        break;
+
+                    case MIDI_OPTION_REMOTE:
+                        midiRemoteEnabled = !midiRemoteEnabled;
+                        midiIn.setRemoteEnabled(midiRemoteEnabled);
+                        break;
+
+                    case MIDI_OPTION_REMOTE_AP:
+                        midiRemoteAutoPlay = !midiRemoteAutoPlay;
+                        midiIn.setRemoteAutoPlay(midiRemoteAutoPlay);
+                        break;
+
+                    case MIDI_OPTION_REMOTE_TR:
+                        midiRemoteTransportEnabled = !midiRemoteTransportEnabled;
+                        midiIn.setRemoteTransportEnabled(midiRemoteTransportEnabled);
+                        break;
+
+                    case MIDI_OPTION_REMOTE_CH:
+                        // 0=OMNI, 1-16, decrement with wraparound
+                        midiRemoteChannel = (midiRemoteChannel + 16) % 17;
+                        midiIn.setRemoteChannel(midiRemoteChannel);
                         break;
 
                     default:
@@ -2501,7 +2574,9 @@ void updateDisplay() {
             break;
 
         case APP_MODE_MIDI_SETTINGS:
-            display.showMidiSettingsMenu(midiThruEnabled, midiKeyboardEnabled, midiKeyboardChannel, midiKeyboardVelocity, currentMidiOption, midiOptionActive);
+            display.showMidiSettingsMenu(midiThruEnabled, midiKeyboardEnabled, midiKeyboardChannel, midiKeyboardVelocity,
+                                         midiRemoteEnabled, midiRemoteAutoPlay, midiRemoteTransportEnabled, midiRemoteChannel,
+                                         currentMidiOption, midiOptionActive);
             break;
 
         case APP_MODE_CLOCK_SETTINGS:
@@ -2917,6 +2992,19 @@ bool saveGlobalSettings() {
     sprintf(line, "MIDI_KEYBOARD_VEL=%u\n", midiKeyboardVelocity);
     settingsFileObj.write(line);
 
+    // Write MIDI Remote Control settings
+    sprintf(line, "MIDI_REMOTE=%d\n", midiRemoteEnabled ? 1 : 0);
+    settingsFileObj.write(line);
+
+    sprintf(line, "MIDI_REMOTE_AP=%d\n", midiRemoteAutoPlay ? 1 : 0);
+    settingsFileObj.write(line);
+
+    sprintf(line, "MIDI_REMOTE_TR=%d\n", midiRemoteTransportEnabled ? 1 : 0);
+    settingsFileObj.write(line);
+
+    sprintf(line, "MIDI_REMOTE_CH=%u\n", midiRemoteChannel);
+    settingsFileObj.write(line);
+
     // Write MIDI Clock settings
     sprintf(line, "MIDI_CLOCK=%d\n", midiClockEnabled ? 1 : 0);
     settingsFileObj.write(line);
@@ -2967,6 +3055,21 @@ bool loadGlobalSettings() {
             if (midiKeyboardVelocity < 1) midiKeyboardVelocity = 1;
             if (midiKeyboardVelocity > 100) midiKeyboardVelocity = 100;
             midiIn.setKeyboardVelocity(midiKeyboardVelocity);
+        } else if (strncmp(line, "MIDI_REMOTE=", 12) == 0) {
+            midiRemoteEnabled = (atoi(line + 12) != 0);
+            midiIn.setRemoteEnabled(midiRemoteEnabled);
+        } else if (strncmp(line, "MIDI_REMOTE_AP=", 15) == 0) {
+            midiRemoteAutoPlay = (atoi(line + 15) != 0);
+            midiIn.setRemoteAutoPlay(midiRemoteAutoPlay);
+        } else if (strncmp(line, "MIDI_REMOTE_TR=", 15) == 0) {
+            midiRemoteTransportEnabled = (atoi(line + 15) != 0);
+            midiIn.setRemoteTransportEnabled(midiRemoteTransportEnabled);
+        } else if (strncmp(line, "MIDI_REMOTE_CH=", 15) == 0) {
+            int v = atoi(line + 15);
+            if (v < 0) v = 0;
+            if (v > 16) v = 16;
+            midiRemoteChannel = (uint8_t)v;
+            midiIn.setRemoteChannel(midiRemoteChannel);
         } else if (strncmp(line, "MIDI_CLOCK=", 11) == 0) {
             midiClockEnabled = (atoi(line + 11) != 0);
             {
@@ -2985,6 +3088,15 @@ bool loadGlobalSettings() {
 
 bool loadFileOnly() {
     unsigned long startTime = millis();
+
+    // .syx files aren't MIDI sequences — they're handled separately via sendSysexFile()
+    FileEntry* candidate = browser.getCurrentFile();
+    if (candidate) {
+        size_t nameLen = strlen(candidate->filename);
+        if (nameLen >= 4 && strcasecmp(candidate->filename + nameLen - 4, ".syx") == 0) {
+            return false;
+        }
+    }
 
     // CRITICAL: Prevent re-entrant calls during rapid file switching
     static bool isLoading = false;
@@ -3155,6 +3267,132 @@ bool loadAndPlayFile() {
     player.play();
 
     return true;
+}
+
+bool sendSysexFile(FileEntry* entry) {
+    if (!entry) return false;
+
+    // Stop any current playback before sending SysEx
+    {
+        ScopedMutex lock(&playerMutex);
+        if (player.getState() == STATE_PLAYING) {
+            player.stop();
+        }
+    }
+    delay(20);  // Let Core 1 exit update()
+
+    // Open the .syx file
+    FatFile syxFile;
+    char fullPath[MAX_PATH_LENGTH];
+    browser.getFullPath(entry, fullPath, sizeof(fullPath));
+    if (!syxFile.open(fullPath, O_RDONLY)) {
+        display.showError("Open failed!");
+        delay(1500);
+        return false;
+    }
+
+    uint32_t totalBytes = syxFile.fileSize();
+    if (totalBytes == 0) {
+        syxFile.close();
+        display.showError("Empty file");
+        delay(1500);
+        return false;
+    }
+
+    display.showMessage("Sending SysEx", entry->filename);
+
+    // Stream file in chunks. Detect F7 boundaries and add a small delay
+    // between complete SysEx messages so slower synths can process each one.
+    constexpr size_t CHUNK_SIZE = 256;
+    uint8_t buffer[CHUNK_SIZE];
+    uint32_t bytesSent = 0;
+    bool sawF7 = false;
+
+    while (bytesSent < totalBytes) {
+        int n = syxFile.read(buffer, CHUNK_SIZE);
+        if (n <= 0) break;
+
+        // Send this chunk to the UART. Serial.write blocks when its buffer fills,
+        // which naturally throttles us to the 31250 baud line rate.
+        midiOut.sendRawBytes(buffer, (size_t)n);
+        bytesSent += n;
+
+        // If this chunk ended a SysEx message, give the synth a moment to process
+        // before starting the next one.
+        for (int i = 0; i < n; i++) {
+            if (buffer[i] == 0xF7) {
+                sawF7 = true;
+            } else if (buffer[i] == 0xF0 && sawF7) {
+                // Boundary between two messages within this chunk — small pause
+                // (chunk-level granularity is fine; this catches the common case
+                // where multiple short SysEx messages are concatenated)
+                delay(20);
+                sawF7 = false;
+                break;
+            }
+        }
+        if (sawF7 && (size_t)n < CHUNK_SIZE) {
+            // End of file reached after F7 — no need to delay further
+            sawF7 = false;
+        } else if (sawF7) {
+            // Chunk ended with F7 — pause before the next chunk in case it starts
+            // a new message
+            delay(20);
+            sawF7 = false;
+        }
+    }
+
+    syxFile.close();
+
+    char doneMsg[24];
+    snprintf(doneMsg, sizeof(doneMsg), "Sent %lu bytes", (unsigned long)bytesSent);
+    display.showMessage("SysEx done!", doneMsg);
+    delay(1200);
+    return true;
+}
+
+void pollMidiRemote() {
+    // Drain MIDI remote control requests posted by Core 1 (MidiInput::update)
+    // and act on them from Core 0 where SD I/O and player loading are safe.
+
+    uint16_t idx;
+    if (midiIn.consumeFileLoadRequest(idx)) {
+        if (browser.setCurrentIndex(idx)) {
+            FileEntry* entry = browser.getCurrentFile();
+            if (entry) {
+                if (midiIn.getRemoteAutoPlay()) {
+                    if (loadAndPlayFile()) {
+                        lastPlayedFile = entry;
+                        currentMode = APP_MODE_PLAY;
+                        display.setMode(MODE_PLAYBACK);
+                        updateDisplay();
+                    }
+                } else {
+                    if (loadFileOnly()) {
+                        lastPlayedFile = entry;
+                        currentMode = APP_MODE_PLAY;
+                        display.setMode(MODE_PLAYBACK);
+                        updateDisplay();
+                    }
+                }
+            }
+        }
+    }
+
+    if (midiIn.consumeTransportStart()) {
+        ScopedMutex lock(&playerMutex);
+        player.play();
+    }
+    if (midiIn.consumeTransportStop()) {
+        ScopedMutex lock(&playerMutex);
+        player.stop();
+    }
+    if (midiIn.consumeTransportContinue()) {
+        ScopedMutex lock(&playerMutex);
+        if (player.getState() == STATE_PAUSED) {
+            player.play();
+        }
+    }
 }
 
 void applySoloLogic() {

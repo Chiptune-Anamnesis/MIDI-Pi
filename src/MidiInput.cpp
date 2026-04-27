@@ -11,6 +11,19 @@ MidiInput::MidiInput(MidiOutput* output) {
     keyboardEnabled = false;
     keyboardChannel = 1;  // Default to channel 1
     keyboardVelocity = 50;  // Default to 50 (normal velocity)
+
+    // Remote control defaults
+    remoteEnabled = false;
+    remoteAutoPlay = true;
+    remoteTransportEnabled = true;
+    remoteChannel = 0;  // OMNI
+    lastBankMSB = 0;
+
+    fileLoadRequested = false;
+    pendingFileIndex = 0;
+    transportStartRequested = false;
+    transportStopRequested = false;
+    transportContinueRequested = false;
 }
 
 void MidiInput::begin() {
@@ -25,6 +38,32 @@ void MidiInput::update() {
         byte channel = midiIn->getChannel();
         byte data1 = midiIn->getData1();
         byte data2 = midiIn->getData2();
+
+        // Remote control: Bank+PC file selection
+        // Channel filter: 0=OMNI, otherwise must match (channel-less messages bypass this)
+        if (remoteEnabled) {
+            bool channelMatch = (remoteChannel == 0) || (channel == remoteChannel);
+            if (channelMatch) {
+                if (type == midi::ControlChange && data1 == 0) {
+                    // CC0 = Bank Select MSB
+                    lastBankMSB = data2 & 0x07;  // Clamp to 8 banks
+                } else if (type == midi::ProgramChange) {
+                    pendingFileIndex = (uint16_t)lastBankMSB * 128 + data1;
+                    fileLoadRequested = true;
+                }
+            }
+        }
+
+        // Remote control: transport (system real-time, no channel)
+        if (remoteTransportEnabled) {
+            if (type == midi::Start) {
+                transportStartRequested = true;
+            } else if (type == midi::Stop) {
+                transportStopRequested = true;
+            } else if (type == midi::Continue) {
+                transportContinueRequested = true;
+            }
+        }
 
         // Handle based on mode
         if (thruEnabled) {
@@ -94,4 +133,29 @@ void MidiInput::update() {
             }
         }
     }
+}
+
+bool MidiInput::consumeFileLoadRequest(uint16_t& outIdx) {
+    if (!fileLoadRequested) return false;
+    outIdx = pendingFileIndex;
+    fileLoadRequested = false;
+    return true;
+}
+
+bool MidiInput::consumeTransportStart() {
+    if (!transportStartRequested) return false;
+    transportStartRequested = false;
+    return true;
+}
+
+bool MidiInput::consumeTransportStop() {
+    if (!transportStopRequested) return false;
+    transportStopRequested = false;
+    return true;
+}
+
+bool MidiInput::consumeTransportContinue() {
+    if (!transportContinueRequested) return false;
+    transportContinueRequested = false;
+    return true;
 }

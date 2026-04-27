@@ -18,6 +18,7 @@ public:
     void sendAfterTouch(uint8_t channel, uint8_t pressure);
     void sendPolyAfterTouch(uint8_t channel, uint8_t note, uint8_t pressure);
     void sendSysEx(const uint8_t* data, uint16_t length);
+    void sendRawBytes(const uint8_t* data, size_t length);
 
     // MIDI Clock and Transport messages
     void sendClock();      // 0xF8 - MIDI Clock tick (24 per quarter note)

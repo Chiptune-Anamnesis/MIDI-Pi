@@ -63,7 +63,10 @@ public:
     DisplayMode getMode() { return currentMode; }
 
     // File browser display
-    void showFileBrowser(FileBrowser* browser);
+    void showFileBrowser(const char* folderName, const char* fileName,
+                         uint16_t fileIndex, uint16_t fileCount,
+                         const char* currentPath,
+                         uint8_t selectedField, bool fieldActive);
 
     // Playback display
     void showPlayback(const PlaybackInfo& info);
@@ -80,7 +83,9 @@ public:
     void showTrackSettingsMenu(uint32_t targetBPM, bool useDefaultTempo, uint8_t velocityScale, bool sysexEnabled, uint8_t currentOption, bool optionActive, bool bpmEditingWhole);
 
     // MIDI Settings menu display
-    void showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled, uint8_t keyboardChannel, uint8_t keyboardVelocity, uint8_t currentOption, bool optionActive);
+    void showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled, uint8_t keyboardChannel, uint8_t keyboardVelocity,
+                              bool remoteEnabled, bool remoteAutoPlay, bool remoteTransportEnabled, uint8_t remoteChannel,
+                              uint8_t currentOption, bool optionActive);
 
     // Clock Settings menu display
     void showClockSettingsMenu(bool clockEnabled, bool cleanLoopEnabled,

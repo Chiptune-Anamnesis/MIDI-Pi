@@ -935,93 +935,181 @@ void DisplayManager::showTrackSettingsMenu(uint32_t targetBPM, bool useDefaultTe
     display.display();
 }
 
-void DisplayManager::showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled, uint8_t keyboardChannel, uint8_t keyboardVelocity, uint8_t currentOption, bool optionActive) {
+void DisplayManager::showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled, uint8_t keyboardChannel, uint8_t keyboardVelocity,
+                                          bool remoteEnabled, bool remoteAutoPlay, bool remoteTransportEnabled, uint8_t remoteChannel,
+                                          uint8_t currentOption, bool optionActive) {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
-    // Title
-    display.setCursor(0, 0);
-    display.print("MIDI IN");
+    // Page selection: options 0-3 on page 1 (MIDI IN), options 4-7 on page 2 (MIDI RMT)
+    bool page2 = (currentOption >= 4);
 
-    // Line 1: MIDI Thru
-    int16_t y1 = 10;
-    display.setCursor(0, y1);
-    display.print("Thru:");
+    if (!page2) {
+        // ===== PAGE 1: Thru / Keyboard / Channel / Velocity =====
 
-    bool thruSelected = (currentOption == 0);
-    const char* thruText = thruEnabled ? "ON " : "OFF";
-    int16_t thruWidth = 18;
+        display.setCursor(0, 0);
+        display.print("MIDI IN");
 
-    if (thruSelected && optionActive) {
-        display.fillRect(36, y1 - 1, thruWidth, 9, SSD1306_WHITE);
-        display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    } else if (thruSelected) {
-        display.drawRect(36, y1 - 1, thruWidth, 9, SSD1306_WHITE);
-    }
-    display.setCursor(38, y1);
-    display.print(thruText);
-    display.setTextColor(SSD1306_WHITE);
+        // Line 1: MIDI Thru
+        int16_t y1 = 10;
+        display.setCursor(0, y1);
+        display.print("Thru:");
 
-    // Line 2: MIDI Keyboard, Channel
-    int16_t y2 = 19;
-    display.setCursor(0, y2);
-    display.print("Kbd:");
+        bool thruSelected = (currentOption == 0);
+        const char* thruText = thruEnabled ? "ON " : "OFF";
+        int16_t thruWidth = 18;
 
-    bool kbdSelected = (currentOption == 1);
-    const char* kbdText = keyboardEnabled ? "ON " : "OFF";
-    int16_t kbdWidth = 18;
+        if (thruSelected && optionActive) {
+            display.fillRect(36, y1 - 1, thruWidth, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (thruSelected) {
+            display.drawRect(36, y1 - 1, thruWidth, 9, SSD1306_WHITE);
+        }
+        display.setCursor(38, y1);
+        display.print(thruText);
+        display.setTextColor(SSD1306_WHITE);
 
-    if (kbdSelected && optionActive) {
-        display.fillRect(24, y2 - 1, kbdWidth, 9, SSD1306_WHITE);
-        display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    } else if (kbdSelected) {
-        display.drawRect(24, y2 - 1, kbdWidth, 9, SSD1306_WHITE);
-    }
-    display.setCursor(26, y2);
-    display.print(kbdText);
-    display.setTextColor(SSD1306_WHITE);
+        // Line 2: MIDI Keyboard, Channel, Velocity
+        int16_t y2 = 19;
+        display.setCursor(0, y2);
+        display.print("Kbd:");
 
-    // Keyboard Channel
-    display.setCursor(48, y2);
-    display.print("Ch:");
+        bool kbdSelected = (currentOption == 1);
+        const char* kbdText = keyboardEnabled ? "ON " : "OFF";
+        int16_t kbdWidth = 18;
 
-    bool chSelected = (currentOption == 2);
-    char chText[4];
-    if (keyboardChannel < 10) {
-        sprintf(chText, " %d", keyboardChannel);
+        if (kbdSelected && optionActive) {
+            display.fillRect(24, y2 - 1, kbdWidth, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (kbdSelected) {
+            display.drawRect(24, y2 - 1, kbdWidth, 9, SSD1306_WHITE);
+        }
+        display.setCursor(26, y2);
+        display.print(kbdText);
+        display.setTextColor(SSD1306_WHITE);
+
+        display.setCursor(48, y2);
+        display.print("Ch:");
+
+        bool chSelected = (currentOption == 2);
+        char chText[4];
+        if (keyboardChannel < 10) {
+            sprintf(chText, " %d", keyboardChannel);
+        } else {
+            sprintf(chText, "%d", keyboardChannel);
+        }
+        int16_t chWidth = 14;
+
+        if (chSelected && optionActive) {
+            display.fillRect(66, y2 - 1, chWidth, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (chSelected) {
+            display.drawRect(66, y2 - 1, chWidth, 9, SSD1306_WHITE);
+        }
+        display.setCursor(68, y2);
+        display.print(chText);
+        display.setTextColor(SSD1306_WHITE);
+
+        display.setCursor(86, y2);
+        display.print("V:");
+
+        bool velSelected = (currentOption == 3);
+        int16_t velWidth = 18;
+
+        if (velSelected && optionActive) {
+            display.fillRect(98, y2 - 1, velWidth, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (velSelected) {
+            display.drawRect(98, y2 - 1, velWidth, 9, SSD1306_WHITE);
+        }
+        display.setCursor(100, y2);
+        if (keyboardVelocity < 10) display.print(" ");
+        display.print(keyboardVelocity);
+        display.setTextColor(SSD1306_WHITE);
     } else {
-        sprintf(chText, "%d", keyboardChannel);
+        // ===== PAGE 2: Remote / AutoPlay / Transport / Channel =====
+
+        display.setCursor(0, 0);
+        display.print("MIDI RMT");
+
+        // Line 1: Rmt + Auto
+        int16_t y1 = 10;
+        display.setCursor(0, y1);
+        display.print("Rmt:");
+
+        bool rmtSelected = (currentOption == 4);
+        const char* rmtText = remoteEnabled ? "ON " : "OFF";
+        int16_t boxW = 18;
+
+        if (rmtSelected && optionActive) {
+            display.fillRect(24, y1 - 1, boxW, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (rmtSelected) {
+            display.drawRect(24, y1 - 1, boxW, 9, SSD1306_WHITE);
+        }
+        display.setCursor(26, y1);
+        display.print(rmtText);
+        display.setTextColor(SSD1306_WHITE);
+
+        display.setCursor(48, y1);
+        display.print("Auto:");
+
+        bool apSelected = (currentOption == 5);
+        const char* apText = remoteAutoPlay ? "ON " : "OFF";
+
+        if (apSelected && optionActive) {
+            display.fillRect(78, y1 - 1, boxW, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (apSelected) {
+            display.drawRect(78, y1 - 1, boxW, 9, SSD1306_WHITE);
+        }
+        display.setCursor(80, y1);
+        display.print(apText);
+        display.setTextColor(SSD1306_WHITE);
+
+        // Line 2: Trn + Ch
+        int16_t y2 = 19;
+        display.setCursor(0, y2);
+        display.print("Trn:");
+
+        bool trnSelected = (currentOption == 6);
+        const char* trnText = remoteTransportEnabled ? "ON " : "OFF";
+
+        if (trnSelected && optionActive) {
+            display.fillRect(24, y2 - 1, boxW, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (trnSelected) {
+            display.drawRect(24, y2 - 1, boxW, 9, SSD1306_WHITE);
+        }
+        display.setCursor(26, y2);
+        display.print(trnText);
+        display.setTextColor(SSD1306_WHITE);
+
+        display.setCursor(48, y2);
+        display.print("Ch:");
+
+        bool chSelected = (currentOption == 7);
+        char chText[6];
+        if (remoteChannel == 0) {
+            strcpy(chText, "OMNI");
+        } else if (remoteChannel < 10) {
+            sprintf(chText, " %d  ", remoteChannel);
+        } else {
+            sprintf(chText, "%d  ", remoteChannel);
+        }
+        int16_t chBoxW = 26;  // wider to fit "OMNI"
+
+        if (chSelected && optionActive) {
+            display.fillRect(66, y2 - 1, chBoxW, 9, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+        } else if (chSelected) {
+            display.drawRect(66, y2 - 1, chBoxW, 9, SSD1306_WHITE);
+        }
+        display.setCursor(68, y2);
+        display.print(chText);
+        display.setTextColor(SSD1306_WHITE);
     }
-    int16_t chWidth = 14;
-
-    if (chSelected && optionActive) {
-        display.fillRect(66, y2 - 1, chWidth, 9, SSD1306_WHITE);
-        display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    } else if (chSelected) {
-        display.drawRect(66, y2 - 1, chWidth, 9, SSD1306_WHITE);
-    }
-    display.setCursor(68, y2);
-    display.print(chText);
-    display.setTextColor(SSD1306_WHITE);
-
-    // Keyboard Velocity
-    display.setCursor(86, y2);
-    display.print("V:");
-
-    bool velSelected = (currentOption == 3);
-    int16_t velWidth = 18;
-
-    if (velSelected && optionActive) {
-        display.fillRect(98, y2 - 1, velWidth, 9, SSD1306_WHITE);
-        display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    } else if (velSelected) {
-        display.drawRect(98, y2 - 1, velWidth, 9, SSD1306_WHITE);
-    }
-    display.setCursor(100, y2);
-    if (keyboardVelocity < 10) display.print(" ");
-    display.print(keyboardVelocity);
-    display.setTextColor(SSD1306_WHITE);
 
     display.display();
 }

@@ -80,6 +80,12 @@ void MidiOutput::sendSysEx(const uint8_t* data, uint16_t length) {
     // If you have real MT-32 hardware and experience glitches, add back a 1-2ms delay
 }
 
+void MidiOutput::sendRawBytes(const uint8_t* data, size_t length) {
+    // Direct UART transmission for raw MIDI byte streams (e.g., .syx files)
+    // Bypasses the MIDI library so the bytes go on the wire exactly as provided
+    Serial1.write(data, length);
+}
+
 void MidiOutput::sendClock() {
     midi->sendRealTime(midi::Clock);
 }

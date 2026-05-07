@@ -15,6 +15,7 @@ Standalone MIDI file player for Raspberry Pi Pico (RP2040). Plays Standard MIDI 
 - **1024 Files** Supports up to 1024 MIDI files. *v1.4.0*
 - **First Level Subfolder Suppot** MIDI/Bass, MIDI/Arp, etc. *v1.4.0*
 - **Dual-Core**: UI on Core 0, MIDI timing on Core 1 (microsecond precision)
+- **MIDI Clock Sync In/Out** with firmware version 1.44 or higher.
 
 ## Hardware
 

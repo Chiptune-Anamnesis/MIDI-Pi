@@ -50,6 +50,7 @@ struct PlaybackInfo {
     PlaybackMode playbackMode; // Playback mode
     uint8_t velocityScale;   // Velocity scale (1-100)
     uint16_t sysexCount;     // Number of SysEx messages (for MT-32 indication)
+    bool externalClockMode;  // True = slave mode → render BPM as "CLK IN", time uses committed master tempo
 };
 
 class DisplayManager {
@@ -87,8 +88,8 @@ public:
                               bool remoteEnabled, bool remoteAutoPlay, bool remoteTransportEnabled, uint8_t remoteChannel,
                               uint8_t currentOption, bool optionActive);
 
-    // Clock Settings menu display
-    void showClockSettingsMenu(bool clockEnabled, bool cleanLoopEnabled,
+    // Clock Settings menu display. clockMode: 0=OFF, 1=OUT, 2=IN (slave).
+    void showClockSettingsMenu(uint8_t clockMode, bool cleanLoopEnabled,
                               uint8_t currentOption, bool optionActive);
 
     // Routing menu display

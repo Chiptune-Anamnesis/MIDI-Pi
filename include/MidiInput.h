@@ -5,6 +5,8 @@
 #include <MIDI.h>
 #include "MidiOutput.h"
 
+class MidiPlayer;  // forward declaration; full include avoided to break cycles
+
 class MidiInput {
 public:
     MidiInput(MidiOutput* output);
@@ -48,6 +50,15 @@ public:
     bool consumeTransportStop();
     bool consumeTransportContinue();
 
+    // Clock IN (slave mode). When enabled, incoming 0xF8 pulses are routed
+    // straight to the player's external-sync tick counter (called directly
+    // from Core 1's MidiInput::update — same core as player.update, so no
+    // mutex needed). 0xFA/0xFB/0xFC also flip transport flags so Core 0
+    // can drive player.play()/stop() safely.
+    void setClockInEnabled(bool enabled) { clockInEnabled = enabled; }
+    bool getClockInEnabled() { return clockInEnabled; }
+    void setMidiPlayer(MidiPlayer* p) { midiPlayer = p; }
+
 private:
     MIDI_NAMESPACE::MidiInterface<MIDI_NAMESPACE::SerialMIDI<HardwareSerial>>* midiIn;
     MidiOutput* midiOut;
@@ -71,6 +82,10 @@ private:
     volatile bool transportStartRequested;
     volatile bool transportStopRequested;
     volatile bool transportContinueRequested;
+
+    // Clock IN (slave mode) state
+    bool clockInEnabled;
+    MidiPlayer* midiPlayer;  // for direct 0xF8 routing on Core 1
 
     // MIDI message handlers
     void handleNoteOn(byte channel, byte note, byte velocity);

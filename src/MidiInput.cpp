@@ -1,4 +1,5 @@
 #include "MidiInput.h"
+#include "MidiPlayer.h"
 #include "pins.h"
 
 // Use the same MIDI instance as MidiOutput (declared in MidiOutput.cpp)
@@ -24,6 +25,9 @@ MidiInput::MidiInput(MidiOutput* output) {
     transportStartRequested = false;
     transportStopRequested = false;
     transportContinueRequested = false;
+
+    clockInEnabled = false;
+    midiPlayer = nullptr;
 }
 
 void MidiInput::begin() {
@@ -32,12 +36,35 @@ void MidiInput::begin() {
 }
 
 void MidiInput::update() {
-    // Read and process MIDI messages
-    if (midiIn->read()) {
+    // Drain ALL buffered MIDI bytes per call. With slave-mode clock at 250 BPM
+    // we get ~100 0xF8 pulses/sec — they MUST all be processed each loop1()
+    // pass or they'll pile up in the UART RX FIFO and we'll lose sync.
+    while (midiIn->read()) {
         midi::MidiType type = midiIn->getType();
         byte channel = midiIn->getChannel();
         byte data1 = midiIn->getData1();
         byte data2 = midiIn->getData2();
+
+        // Slave mode: route incoming MIDI clock and transport messages.
+        // 0xF8 increments the player's sync-tick counter directly (Core 1 →
+        // Core 1, no mutex needed). 0xFA/0xFB/0xFC flip flags Core 0 consumes.
+        if (clockInEnabled) {
+            if (type == midi::Clock) {
+                if (midiPlayer) midiPlayer->onExternalClockTick();
+            } else if (type == midi::Start) {
+                // Reset sync counter so subsequent 0xF8s count from song-start.
+                // Pulses arriving between this 0xFA and Core 0 consuming the
+                // flag below are still counted, so when player.play() finally
+                // runs the snap forward to the master's actual position is
+                // automatic — no offset.
+                if (midiPlayer) midiPlayer->resetExternalSyncTicks();
+                transportStartRequested = true;
+            } else if (type == midi::Stop) {
+                transportStopRequested = true;
+            } else if (type == midi::Continue) {
+                transportContinueRequested = true;
+            }
+        }
 
         // Remote control: Bank+PC file selection
         // Channel filter: 0=OMNI, otherwise must match (channel-less messages bypass this)
@@ -54,8 +81,10 @@ void MidiInput::update() {
             }
         }
 
-        // Remote control: transport (system real-time, no channel)
-        if (remoteTransportEnabled) {
+        // Remote control: transport (system real-time, no channel).
+        // In slave mode the same flags are already raised above; this path
+        // covers the non-clock-IN remote-control case (Bank+PC + transport).
+        if (remoteTransportEnabled && !clockInEnabled) {
             if (type == midi::Start) {
                 transportStartRequested = true;
             } else if (type == midi::Stop) {

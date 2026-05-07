@@ -228,8 +228,11 @@ struct ApplicationState {
     bool midiRemoteTransportEnabled;
     uint8_t midiRemoteChannel;  // 0=OMNI, 1-16
 
-    // MIDI Clock Settings
-    bool midiClockEnabled;
+    // MIDI Clock Settings — three-position mode selector
+    //   OFF: no clock generation, no slave
+    //   OUT: master — emit 0xF8 from player
+    //   IN:  slave — drive player from incoming 0xF8
+    uint8_t clockMode;             // see ClockMode enum (file-scope)
     bool cleanLoopEnabled;  // True = skip All Notes Off during LP1 loop restart
 
     // Visualizer state (simple velocity tracking)
@@ -296,7 +299,7 @@ struct ApplicationState {
         , midiRemoteAutoPlay(true)
         , midiRemoteTransportEnabled(true)
         , midiRemoteChannel(0)  // OMNI
-        , midiClockEnabled(false)
+        , clockMode(0)              // CLOCK_MODE_OFF
         , cleanLoopEnabled(true)  // Clean loop ON by default
         , currentChannelOption(CH_OPTION_CHANNEL)
         , channelOptionActive(false)
@@ -392,7 +395,7 @@ bool& midiRemoteEnabled = appState.midiRemoteEnabled;
 bool& midiRemoteAutoPlay = appState.midiRemoteAutoPlay;
 bool& midiRemoteTransportEnabled = appState.midiRemoteTransportEnabled;
 uint8_t& midiRemoteChannel = appState.midiRemoteChannel;
-bool& midiClockEnabled = appState.midiClockEnabled;
+uint8_t& clockMode = appState.clockMode;
 bool& cleanLoopEnabled = appState.cleanLoopEnabled;
 VisualizerState* vizChannels = appState.vizChannels;
 uint8_t* channelActivity = appState.channelActivity;
@@ -413,6 +416,35 @@ bool& showingConfirmation = appState.showingConfirmation;
 ConfirmAction& pendingConfirmAction = appState.pendingConfirmAction;
 bool& confirmSelection = appState.confirmSelection;
 bool& justActivatedOption = appState.justActivatedOption;
+
+// MIDI Clock mode (file-scope enum). Stored as uint8_t in appState for
+// stable settings serialization.
+enum ClockMode : uint8_t {
+    CLOCK_MODE_OFF = 0,
+    CLOCK_MODE_OUT = 1,  // master — emit 0xF8 from player
+    CLOCK_MODE_IN  = 2   // slave — drive player from incoming 0xF8
+};
+
+// Slave-mode "committed" master BPM. Updates only when the player's smoothed
+// measured BPM has drifted >10 BPM from this value, so the duration display
+// stays rock-stable instead of jittering with every pulse-interval wiggle.
+// 0.0 = not yet committed (display falls back to file-tempo timing).
+static float g_committedSlaveBPM = 0.0f;
+
+// Apply clockMode to the player + MidiInput. Called when the user changes
+// the setting and once at boot after settings load.
+static void applyClockMode() {
+    bool out = (clockMode == CLOCK_MODE_OUT);
+    bool in  = (clockMode == CLOCK_MODE_IN);
+    player.setClockEnabled(out);
+    player.setUseExternalClock(in);
+    midiIn.setClockInEnabled(in);
+    // Switching INTO slave mode while playing? Stop — slaves wait for the
+    // master's 0xFA before producing audio.
+    if (in && player.getState() == STATE_PLAYING) {
+        player.stop();
+    }
+}
 
 // Function declarations
 void handleBrowseMode(Button btn);
@@ -531,9 +563,15 @@ void setup() {
     // Initialize mutex for player object access (BEFORE loadFileOnly)
     mutex_init(&playerMutex);
 
+    // Wire MidiInput → MidiPlayer for direct slave-mode 0xF8 routing.
+    midiIn.setMidiPlayer(&player);
+
     // Load global settings (MIDI IN, MIDI Clock)
     display.showMessage("Loading", "Settings...");
     loadGlobalSettings();
+
+    // Settings are loaded — push the saved clockMode into player + midiIn.
+    applyClockMode();
 
     // Show ready message
     display.showMessage("Ready!", "");
@@ -688,6 +726,14 @@ void loop() {
         {
             ScopedMutex lock(&playerMutex);
             currentState = player.getState();
+        }
+
+        // In slave mode, all playback is driven by the master's MIDI transport
+        // messages (0xFA/0xFB/0xFC). Local play/pause is disabled so the user
+        // can't accidentally desync from the master. Local stop still works
+        // (button handler above this).
+        if (clockMode == CLOCK_MODE_IN) {
+            return;
         }
 
         if (currentState == STATE_PLAYING) {
@@ -2237,10 +2283,10 @@ void handleClockSettingsMode(Button btn) {
     switch (btn) {
         case BTN_RIGHT:
             if (clockOptionActive) {
-                // Active - toggle current option's value
+                // Active - cycle current option's value
                 if (currentClockOption == CLOCK_OPTION_ENABLED) {
-                    midiClockEnabled = !midiClockEnabled;
-                    player.setClockEnabled(midiClockEnabled);
+                    clockMode = (clockMode + 1) % 3;
+                    applyClockMode();
                 } else if (currentClockOption == CLOCK_OPTION_CLEAN_LOOP) {
                     cleanLoopEnabled = !cleanLoopEnabled;
                     player.setCleanLoop(cleanLoopEnabled);
@@ -2255,10 +2301,9 @@ void handleClockSettingsMode(Button btn) {
 
         case BTN_LEFT:
             if (clockOptionActive) {
-                // Active - toggle current option's value
                 if (currentClockOption == CLOCK_OPTION_ENABLED) {
-                    midiClockEnabled = !midiClockEnabled;
-                    player.setClockEnabled(midiClockEnabled);
+                    clockMode = (clockMode + 2) % 3;  // -1 mod 3
+                    applyClockMode();
                 } else if (currentClockOption == CLOCK_OPTION_CLEAN_LOOP) {
                     cleanLoopEnabled = !cleanLoopEnabled;
                     player.setCleanLoop(cleanLoopEnabled);
@@ -2509,9 +2554,8 @@ void updateDisplay() {
 
                 {
                     ScopedMutex lock(&playerMutex);
-                    info.currentTime = player.getCurrentTimeMs();
-                    info.totalTime = player.getTotalTimeMs();
                     info.targetBPM = targetBPM;  // Display user's target BPM
+                    info.externalClockMode = (clockMode == CLOCK_MODE_IN);
 
                     MidiFileInfo fileInfo = player.getFileInfo();
                     info.timeSignatureNum = fileInfo.numerator;
@@ -2520,6 +2564,41 @@ void updateDisplay() {
                     info.isPlaying = (player.getState() == STATE_PLAYING);
                     info.isPaused = (player.getState() == STATE_PAUSED);
                     info.channelMutes = player.getChannelMutes();
+
+                    // Slave mode: pull the smoothed measured BPM from the
+                    // player and only re-commit when it drifts >10 BPM from
+                    // the last committed value, so the duration display
+                    // settles on a steady number instead of wiggling. Then
+                    // compute the displayed times directly from the committed
+                    // BPM, without touching the player's internal timing
+                    // state — keeps tempo display non-invasive to playback.
+                    if (clockMode == CLOCK_MODE_IN) {
+                        float measured = player.getMeasuredExternalBPM();
+                        if (measured > 0.0f) {
+                            if (g_committedSlaveBPM == 0.0f) {
+                                g_committedSlaveBPM = measured;
+                            } else {
+                                float diff = (measured > g_committedSlaveBPM)
+                                                 ? (measured - g_committedSlaveBPM)
+                                                 : (g_committedSlaveBPM - measured);
+                                if (diff > 10.0f) g_committedSlaveBPM = measured;
+                            }
+                        }
+                        if (g_committedSlaveBPM > 0.0f && fileInfo.ticksPerQuarter > 0) {
+                            uint32_t curTicks = player.getCurrentTicks();
+                            uint32_t totTicks = player.getParser().getFileLengthTicks();
+                            float denom = g_committedSlaveBPM * (float)fileInfo.ticksPerQuarter;
+                            info.currentTime = (uint32_t)(((float)curTicks * 60000.0f) / denom);
+                            info.totalTime  = (uint32_t)(((float)totTicks * 60000.0f) / denom);
+                        } else {
+                            info.currentTime = player.getCurrentTimeMs();
+                            info.totalTime = player.getTotalTimeMs();
+                        }
+                    } else {
+                        g_committedSlaveBPM = 0.0f;
+                        info.currentTime = player.getCurrentTimeMs();
+                        info.totalTime = player.getTotalTimeMs();
+                    }
                 }
 
                 // Add menu state
@@ -2580,7 +2659,7 @@ void updateDisplay() {
             break;
 
         case APP_MODE_CLOCK_SETTINGS:
-            display.showClockSettingsMenu(midiClockEnabled, cleanLoopEnabled,
+            display.showClockSettingsMenu(clockMode, cleanLoopEnabled,
                                          currentClockOption, clockOptionActive);
             break;
 
@@ -3005,8 +3084,8 @@ bool saveGlobalSettings() {
     sprintf(line, "MIDI_REMOTE_CH=%u\n", midiRemoteChannel);
     settingsFileObj.write(line);
 
-    // Write MIDI Clock settings
-    sprintf(line, "MIDI_CLOCK=%d\n", midiClockEnabled ? 1 : 0);
+    // Write MIDI Clock mode (0=OFF, 1=OUT, 2=IN)
+    sprintf(line, "CLOCK_MODE=%u\n", (unsigned)clockMode);
     settingsFileObj.write(line);
 
     // Write Clean Loop setting
@@ -3070,12 +3149,17 @@ bool loadGlobalSettings() {
             if (v > 16) v = 16;
             midiRemoteChannel = (uint8_t)v;
             midiIn.setRemoteChannel(midiRemoteChannel);
+        } else if (strncmp(line, "CLOCK_MODE=", 11) == 0) {
+            int v = atoi(line + 11);
+            if (v < 0 || v > 2) v = 0;
+            clockMode = (uint8_t)v;
+            // applyClockMode() is called once at end of setup() after the
+            // settings file is parsed, so the player + midiIn pick up the
+            // saved mode. Don't call here — player mutex isn't held safely
+            // and not all subsystems are wired up yet at load time.
         } else if (strncmp(line, "MIDI_CLOCK=", 11) == 0) {
-            midiClockEnabled = (atoi(line + 11) != 0);
-            {
-                ScopedMutex lock(&playerMutex);
-                player.setClockEnabled(midiClockEnabled);
-            }
+            // Legacy setting (pre-clock-IN era). Map old bool to new mode.
+            clockMode = (atoi(line + 11) != 0) ? CLOCK_MODE_OUT : CLOCK_MODE_OFF;
         } else if (strncmp(line, "CLEAN_LOOP=", 11) == 0) {
             cleanLoopEnabled = (atoi(line + 11) != 0);
             player.setCleanLoop(cleanLoopEnabled);

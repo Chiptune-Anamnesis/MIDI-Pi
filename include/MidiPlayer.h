@@ -76,6 +76,27 @@ public:
     void setClockEnabled(bool enabled) { clockEnabled = enabled; }
     bool getClockEnabled() { return clockEnabled; }
 
+    // Slave mode (clock IN). Tick advancement is driven by incoming 0xF8
+    // pulses instead of microsecondsPerTick + micros(). Each pulse advances
+    // by ticksPerQuarter/24 file ticks (24 PPQN MIDI clock standard).
+    // No PLL, no interpolation — like a drum machine.
+    void setUseExternalClock(bool enabled) { useExternalClock = enabled; }
+    bool getUseExternalClock() { return useExternalClock; }
+    // Called from MidiInput on every incoming 0xF8 (Core 1, called from
+    // loop1's MidiInput::update() — same core as player.update() so no mutex
+    // is required). Records the pulse-to-pulse interval into a 24-slot ring
+    // buffer (one quarter-note's worth at any tempo) and republishes the
+    // averaged tempo as `measuredExternalBPM` for the display path to read.
+    void onExternalClockTick();
+    void resetExternalSyncTicks();
+    uint32_t getExternalSyncTicks() { return externalSyncTicks; }
+    // Position getters used to compute slave-mode display time externally
+    // (without mutating the player's internal microsecondsPerTick).
+    uint32_t getCurrentTicks() { return ticksElapsed; }
+    // Smoothed master BPM measured from incoming 0xF8 intervals. 0.0 = not
+    // yet measured (no pulses received since reset).
+    float getMeasuredExternalBPM() { return measuredExternalBPM; }
+
     // Seamless Loop Mode (for LP1 - zero-gap looping)
     void setLoopMode(bool enabled) { loopMode = enabled; }
     bool getLoopMode() { return loopMode; }
@@ -124,8 +145,41 @@ private:
     // Seamless Loop Mode
     bool loopMode;              // True = seamless loop at end of file
     volatile bool loopRestarted; // Flag for Core 0 to detect loop restart
-    bool cleanLoop;             // True = skip All Notes Off during loop restart
+    bool cleanLoop;             // True = use targeted NOTE_OFFs instead of CC123 burst at loop restart
     bool loopSkipSetup;         // True = skip redundant setup events at tick 0 after loop restart
+
+    // Active-note tracking. One bit per (channel, note) covering 16 ch × 128 notes
+    // = 256 bytes. Set when a NOTE_ON (vel>0) is sent on the wire, cleared on
+    // NOTE_OFF (or vel-0 NOTE_ON). Used by stopActiveNotes() so we can clear
+    // hanging notes at the LP1 loop boundary with minimal UART traffic
+    // (3 bytes per active note instead of the 48-byte all-channels CC123 burst).
+    uint8_t activeNotes[16][16];
+    inline void noteActiveSet(uint8_t channel, uint8_t note) {
+        if (channel < 16 && note < 128)
+            activeNotes[channel][note >> 3] |= (uint8_t)(1 << (note & 7));
+    }
+    inline void noteActiveClear(uint8_t channel, uint8_t note) {
+        if (channel < 16 && note < 128)
+            activeNotes[channel][note >> 3] &= (uint8_t)~(1 << (note & 7));
+    }
+    void stopActiveNotes();        // emit NOTE_OFFs for tracked-active notes only
+    void clearActiveNoteTracking(); // zero the bitmap (call after CC123 / panic)
+
+    // Slave mode (clock IN)
+    volatile bool useExternalClock;
+    volatile uint32_t externalSyncTicks;  // count of 0xF8 pulses since last reset
+
+    // Smoothed master-tempo measurement: ring buffer of the last 24 pulse-to-
+    // pulse intervals (1 quarter note's worth at any tempo) → averaged into
+    // measuredExternalBPM. All members written only on Core 1 in
+    // onExternalClockTick(); read from Core 0 in the display path.
+    static constexpr uint8_t SYNC_INTERVAL_BUFFER_SIZE = 24;
+    volatile uint32_t lastSyncTickMicros;
+    volatile uint32_t syncIntervals[SYNC_INTERVAL_BUFFER_SIZE];
+    volatile uint32_t syncIntervalSum;
+    volatile uint8_t  syncIntervalIdx;
+    volatile uint8_t  syncIntervalCount;
+    volatile float    measuredExternalBPM;
 
     // SysEx Control
     bool sysexEnabled; // True = send SysEx messages, False = filter them out

@@ -24,6 +24,16 @@ MidiPlayer::MidiPlayer(MidiOutput* output) {
     cleanLoop = true;
     loopSkipSetup = false;
 
+    // Slave mode (clock IN)
+    useExternalClock = false;
+    externalSyncTicks = 0;
+    lastSyncTickMicros = 0;
+    syncIntervalSum = 0;
+    syncIntervalIdx = 0;
+    syncIntervalCount = 0;
+    measuredExternalBPM = 0.0f;
+    for (uint8_t i = 0; i < SYNC_INTERVAL_BUFFER_SIZE; i++) syncIntervals[i] = 0;
+
     // SysEx Control
     sysexEnabled = true; // SysEx enabled by default
 
@@ -36,6 +46,8 @@ MidiPlayer::MidiPlayer(MidiOutput* output) {
         userChannelTranspose[i] = 0;  // 0 = no transpose, -24 to +24 = transpose in semitones
         userChannelRouting[i] = 255;  // 255 = use original channel, 0-15 = route to that channel
     }
+
+    clearActiveNoteTracking();
 }
 
 MidiPlayer::~MidiPlayer() {
@@ -185,6 +197,77 @@ void MidiPlayer::stopAllNotes() {
     for (uint8_t ch = 1; ch <= 16; ch++) {
         midiOut->sendControlChange(ch, 123, 0); // All Notes Off
     }
+    clearActiveNoteTracking();  // synth state matches our tracking again
+}
+
+void MidiPlayer::stopActiveNotes() {
+    // Targeted clear: emit NOTE_OFFs only for notes the tracker says are
+    // currently sounding. Used at the LP1 loop boundary so we clear hangers
+    // without the 48-byte CC123 burst that causes the audible click.
+    if (!midiOut) return;
+    for (uint8_t ch = 0; ch < 16; ch++) {
+        for (uint8_t byte = 0; byte < 16; byte++) {
+            uint8_t bits = activeNotes[ch][byte];
+            if (!bits) continue;
+            uint8_t baseNote = (uint8_t)(byte << 3);
+            for (uint8_t bit = 0; bit < 8; bit++) {
+                if (bits & (1 << bit)) {
+                    midiOut->sendNoteOff((uint8_t)(ch + 1), (uint8_t)(baseNote + bit), 0);
+                }
+            }
+            activeNotes[ch][byte] = 0;
+        }
+    }
+}
+
+void MidiPlayer::onExternalClockTick() {
+    externalSyncTicks++;
+
+    // Measure master tempo from pulse-to-pulse interval. 24 PPQN means
+    // BPM = 60_000_000 / (avg_interval_us * 24). Buffer 24 samples = one
+    // quarter note's worth of smoothing at any tempo.
+    uint32_t now = micros();
+    uint32_t prev = lastSyncTickMicros;
+    lastSyncTickMicros = now;
+    if (prev == 0) return;  // first pulse after reset; no valid interval
+
+    uint32_t interval = now - prev;
+    // Reject obviously bogus intervals (e.g. spurious pulses or a paused
+    // master sending a stray 0xF8 after a long gap). Anything outside the
+    // 1–500 BPM band is implausible at PPQN_24.
+    //   60s / (1   BPM * 24) = 2.500 s  → 2_500_000 us
+    //   60s / (500 BPM * 24) = 5_000 us
+    if (interval < 5000 || interval > 2500000) return;
+
+    if (syncIntervalCount == SYNC_INTERVAL_BUFFER_SIZE) {
+        syncIntervalSum -= syncIntervals[syncIntervalIdx];
+    }
+    syncIntervals[syncIntervalIdx] = interval;
+    syncIntervalSum += interval;
+    syncIntervalIdx = (syncIntervalIdx + 1) % SYNC_INTERVAL_BUFFER_SIZE;
+    if (syncIntervalCount < SYNC_INTERVAL_BUFFER_SIZE) syncIntervalCount++;
+
+    uint32_t avgInterval = syncIntervalSum / syncIntervalCount;
+    if (avgInterval > 0) {
+        measuredExternalBPM = 60000000.0f / ((float)avgInterval * 24.0f);
+    }
+}
+
+void MidiPlayer::resetExternalSyncTicks() {
+    externalSyncTicks = 0;
+    // Reset the pulse-interval state so the first pulse after this reset
+    // doesn't compute a bogus interval against an old timestamp. Keep
+    // measuredExternalBPM intact — the master is still running at the same
+    // tempo, so the displayed BPM stays stable across song-start/stop.
+    lastSyncTickMicros = 0;
+}
+
+void MidiPlayer::clearActiveNoteTracking() {
+    for (uint8_t ch = 0; ch < 16; ch++) {
+        for (uint8_t byte = 0; byte < 16; byte++) {
+            activeNotes[ch][byte] = 0;
+        }
+    }
 }
 
 void MidiPlayer::resetMidiDevice() {
@@ -197,6 +280,7 @@ void MidiPlayer::resetMidiDevice() {
         midiOut->sendControlChange(ch, 123, 0); // All Notes Off
         midiOut->sendControlChange(ch, 121, 0); // Reset All Controllers
     }
+    clearActiveNoteTracking();  // synth is now silent — our tracking matches
 
     // Small delay to ensure messages are processed
     delay(10);
@@ -207,10 +291,22 @@ void MidiPlayer::update() {
     if (!eventReady) {
         // End of file
         if (loopMode) {
-            // Seamless loop - restart from cached buffers (no SD I/O)
-            if (!cleanLoop) stopAllNotes();  // Skip CC 123 when clean loop enabled
+            // Seamless loop - restart from cached buffers (no SD I/O).
+            // Targeted NOTE_OFFs for any tracked-active notes so hangers don't
+            // bleed into the next loop. Sends 3 bytes per active note, 0 bytes
+            // when nothing's hanging — far less disruptive than the 48-byte
+            // CC123-to-all-channels burst stopAllNotes() emits.
+            stopActiveNotes();
             if (parser.resetForLoop()) {
                 ticksElapsed = 0;
+                // CRITICAL in slave mode: also rebase the external-sync counter.
+                // Without this, the next tick-advancement reads externalSyncTicks
+                // (now well past the song's PPQN length) and snaps ticksElapsed
+                // forward past the end of file again — the while loop below
+                // then rapid-fires every NOTE_ON in the song at full velocity
+                // until the time budget cuts it off. Reset to 0 so subsequent
+                // master 0xF8 pulses count from the loop's tick 0.
+                externalSyncTicks = 0;
                 eventReady = parser.readNextEvent(nextEvent);
                 lastUpdateMicros = micros();
                 lastClockMicros = micros();
@@ -230,42 +326,58 @@ void MidiPlayer::update() {
         }
     }
 
-    // CRITICAL: Guard against division by zero if tempo not yet calculated
-    if (microsecondsPerTick == 0) return;
-
-    uint32_t currentMicros = micros();
-
-    // Send MIDI Clock ticks (24 per quarter note)
-    if (clockEnabled) {
-        // Derive clock interval directly from microsecondsPerTick (no lossy BPM round-trip)
-        // microsecondsPerClock = (microsecondsPerTick * ticksPerQuarter) / 24
+    // Tick advancement: pick external (slave) or internal (time-based) source
+    if (useExternalClock) {
+        // Slave mode: each 0xF8 pulse = 1/24 quarter = ticksPerQuarter/24 file ticks.
+        // Snap ticksElapsed forward to wherever the master's clock has us.
         MidiFileInfo info = parser.getFileInfo();
-        uint32_t microsecondsPerClock = ((uint64_t)microsecondsPerTick * info.ticksPerQuarter) / 24;
+        if (info.ticksPerQuarter == 0) return;  // file not loaded
+        uint32_t targetTicks = ((uint64_t)externalSyncTicks * info.ticksPerQuarter) / 24;
+        if (targetTicks > ticksElapsed) {
+            ticksElapsed = targetTicks;
+        }
+    } else {
+        // CRITICAL: Guard against division by zero if tempo not yet calculated
+        if (microsecondsPerTick == 0) return;
 
-        if (microsecondsPerClock > 0 && currentMicros - lastClockMicros >= microsecondsPerClock) {
-            midiOut->sendClock();
-            lastClockMicros += microsecondsPerClock;  // Accumulate for drift-free timing
+        uint32_t currentMicros = micros();
+
+        // Send MIDI Clock ticks (24 per quarter note)
+        if (clockEnabled) {
+            // Derive clock interval directly from microsecondsPerTick (no lossy BPM round-trip)
+            // microsecondsPerClock = (microsecondsPerTick * ticksPerQuarter) / 24
+            MidiFileInfo info = parser.getFileInfo();
+            uint32_t microsecondsPerClock = ((uint64_t)microsecondsPerTick * info.ticksPerQuarter) / 24;
+
+            if (microsecondsPerClock > 0 && currentMicros - lastClockMicros >= microsecondsPerClock) {
+                midiOut->sendClock();
+                lastClockMicros += microsecondsPerClock;  // Accumulate for drift-free timing
+            }
+        }
+
+        uint32_t elapsedMicros = currentMicros - lastUpdateMicros;
+
+        // Calculate how many ticks have passed
+        uint32_t ticksPassed = elapsedMicros / microsecondsPerTick;
+
+        if (ticksPassed > 0) {
+            ticksElapsed += ticksPassed;
+
+            // Update lastUpdateMicros by the exact amount of microseconds consumed
+            // This preserves fractional microseconds for accurate timing
+            lastUpdateMicros += ticksPassed * microsecondsPerTick;
         }
     }
 
-    uint32_t elapsedMicros = currentMicros - lastUpdateMicros;
-
-    // Calculate how many ticks have passed
-    uint32_t ticksPassed = elapsedMicros / microsecondsPerTick;
-
-    if (ticksPassed > 0) {
-        ticksElapsed += ticksPassed;
-
-        // Update lastUpdateMicros by the exact amount of microseconds consumed
-        // This preserves fractional microseconds for accurate timing
-        lastUpdateMicros += ticksPassed * microsecondsPerTick;
-
-        // Process events that should happen by now
+    // Common event processing: dispatch any events that have come due. Runs
+    // in both internal- and external-clock modes; the clock source above is
+    // what advances ticksElapsed.
+    {
         // CRITICAL: Limit TIME spent in update() to avoid holding mutex too long
         // This prevents blocking Core 0 (UI thread) for extended periods
         // Large SysEx messages can take a long time, so use time-based limit instead of event count
         unsigned long updateStartMicros = micros();
-        constexpr unsigned long MAX_UPDATE_TIME_MICROS = 15000;  // Max 15ms per update call (reduced from 50ms for better UI responsiveness)
+        constexpr unsigned long MAX_UPDATE_TIME_MICROS = 15000;  // Max 15ms per update call
 
         while (eventReady && nextEvent.absoluteTime <= ticksElapsed) {
             // Check if we should stop (allows fast exit when switching tracks)
@@ -297,10 +409,12 @@ void MidiPlayer::update() {
             if (!eventReady) {
                 // End of file
                 if (loopMode) {
-                    // Seamless loop - restart from cached buffers (no SD I/O)
-                    if (!cleanLoop) stopAllNotes();  // Skip CC 123 when clean loop enabled
+                    // Seamless loop - restart from cached buffers (no SD I/O).
+                    // See top-of-update() comment for stopActiveNotes() rationale.
+                    stopActiveNotes();
                     if (parser.resetForLoop()) {
                         ticksElapsed = 0;
+                        externalSyncTicks = 0;  // see top-of-update() comment
                         eventReady = parser.readNextEvent(nextEvent);
                         lastUpdateMicros = micros();
                         lastClockMicros = micros();
@@ -366,6 +480,8 @@ void MidiPlayer::sendMidiEvent(const MidiEvent& event) {
                 if (transposedNote < 0) transposedNote = 0;
                 if (transposedNote > 127) transposedNote = 127;
                 midiOut->sendNoteOff(channel, static_cast<uint8_t>(transposedNote), event.data2);
+                // Track on the routed/transposed (channel, note) we actually sent.
+                noteActiveClear((uint8_t)(channel - 1), (uint8_t)transposedNote);
             }
             break;
 
@@ -376,6 +492,7 @@ void MidiPlayer::sendMidiEvent(const MidiEvent& event) {
                 if (transposedNote < 0) transposedNote = 0;
                 if (transposedNote > 127) transposedNote = 127;
                 midiOut->sendNoteOff(channel, static_cast<uint8_t>(transposedNote), 0);
+                noteActiveClear((uint8_t)(channel - 1), (uint8_t)transposedNote);
             } else {
                 // Scale velocity based on global velocityScale setting
                 // velocityScale: 50 = use MIDI file velocity as-is (no change)
@@ -402,6 +519,7 @@ void MidiPlayer::sendMidiEvent(const MidiEvent& event) {
                 if (transposedNote > 127) transposedNote = 127;
 
                 midiOut->sendNoteOn(channel, static_cast<uint8_t>(transposedNote), static_cast<uint8_t>(scaledVelocity));
+                noteActiveSet((uint8_t)(channel - 1), (uint8_t)transposedNote);
             }
             break;
 
@@ -420,6 +538,15 @@ void MidiPlayer::sendMidiEvent(const MidiEvent& event) {
             } else {
                 // Allow MIDI file to control this CC message
                 midiOut->sendControlChange(channel, event.data1, event.data2);
+                // CC 120 (All Sound Off) and CC 123 (All Notes Off) silence the
+                // routed channel — clear our active-note tracking for it so
+                // we don't try to NOTE_OFF notes that aren't playing anymore.
+                if (event.data1 == 120 || event.data1 == 123) {
+                    uint8_t routed = (uint8_t)(channel - 1);
+                    if (routed < 16) {
+                        for (uint8_t b = 0; b < 16; b++) activeNotes[routed][b] = 0;
+                    }
+                }
             }
             break;
 

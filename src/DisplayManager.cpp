@@ -239,14 +239,20 @@ void DisplayManager::showPlayback(const PlaybackInfo& info) {
     int16_t bpmX = 0;
     bool bpmHighlighted = (info.selectedOption == MENU_BPM);
 
-    // Display format: "BPM:120.50" (targetBPM is in hundredths)
+    // Display format: "BPM:120.50" (targetBPM is in hundredths). In slave
+    // mode the master drives tempo, so we render "BPM:CLK IN" and skip the
+    // active-edit decoration (no in-place editing while slaved).
     char bpmText[16];
     uint16_t wholeBPM = info.targetBPM / 100;
     uint8_t decimalBPM = info.targetBPM % 100;
-    sprintf(bpmText, "BPM:%d.%02d", wholeBPM, decimalBPM);
+    if (info.externalClockMode) {
+        strcpy(bpmText, "BPM:CLK IN");
+    } else {
+        sprintf(bpmText, "BPM:%d.%02d", wholeBPM, decimalBPM);
+    }
     int16_t bpmWidth = strlen(bpmText) * 6 + 4;
 
-    if (bpmHighlighted && info.optionActive) {
+    if (bpmHighlighted && info.optionActive && !info.externalClockMode) {
         // Active - draw filled box with inverse text
         display.fillRect(bpmX, y - 1, bpmWidth, 9, SSD1306_WHITE);
         display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
@@ -1114,7 +1120,7 @@ void DisplayManager::showMidiSettingsMenu(bool thruEnabled, bool keyboardEnabled
     display.display();
 }
 
-void DisplayManager::showClockSettingsMenu(bool clockEnabled, bool cleanLoopEnabled,
+void DisplayManager::showClockSettingsMenu(uint8_t clockMode, bool cleanLoopEnabled,
                                            uint8_t currentOption, bool optionActive) {
     display.clearDisplay();
     display.setTextSize(1);
@@ -1124,12 +1130,14 @@ void DisplayManager::showClockSettingsMenu(bool clockEnabled, bool cleanLoopEnab
     display.setCursor(0, 0);
     display.print("SETTINGS");
 
-    // Option 0: Clock Enabled
+    // Option 0: Clock Mode — OFF / OUT (master) / IN (slave)
     int16_t y1 = 12;
     display.setCursor(0, y1);
-    display.print("ClkOut:");
+    display.print("Clock:");
 
-    const char* clockText = clockEnabled ? "ON " : "OFF";
+    const char* clockText = (clockMode == 1) ? "OUT"
+                          : (clockMode == 2) ? "IN "
+                                             : "OFF";
     int16_t valWidth = 18;
     bool clockSelected = (currentOption == 0);
 

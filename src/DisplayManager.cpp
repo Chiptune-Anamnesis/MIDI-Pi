@@ -240,13 +240,17 @@ void DisplayManager::showPlayback(const PlaybackInfo& info) {
     bool bpmHighlighted = (info.selectedOption == MENU_BPM);
 
     // Display format: "BPM:120.50" (targetBPM is in hundredths). In slave
-    // mode the master drives tempo, so we render "BPM:CLK IN" and skip the
+    // mode the master drives tempo, so we render "BPM:IN 1/1" (1× sync) /
+    // "BPM:IN 1/2" (half-time) / "BPM:IN 1*2" (double-time) and skip the
     // active-edit decoration (no in-place editing while slaved).
     char bpmText[16];
     uint16_t wholeBPM = info.targetBPM / 100;
     uint8_t decimalBPM = info.targetBPM % 100;
     if (info.externalClockMode) {
-        strcpy(bpmText, "BPM:CLK IN");
+        const char* rateText = (info.externalClockRate == 0) ? "1/2"
+                              : (info.externalClockRate == 2) ? "1*2"
+                                                              : "1/1";
+        sprintf(bpmText, "BPM:IN %s", rateText);
     } else {
         sprintf(bpmText, "BPM:%d.%02d", wholeBPM, decimalBPM);
     }
@@ -1130,40 +1134,47 @@ void DisplayManager::showClockSettingsMenu(uint8_t clockMode, bool cleanLoopEnab
     display.setCursor(0, 0);
     display.print("SETTINGS");
 
-    // Option 0: Clock Mode — OFF / OUT (master) / IN (slave)
+    // Option 0: Clock Mode — OFF / OUT / IN 1/1 / IN 1/2 / IN 1*2.
+    // Box widened to 36 px (6 chars) so the IN-rate variants fit.
     int16_t y1 = 12;
     display.setCursor(0, y1);
     display.print("Clock:");
 
-    const char* clockText = (clockMode == 1) ? "OUT"
-                          : (clockMode == 2) ? "IN "
-                                             : "OFF";
-    int16_t valWidth = 18;
+    const char* clockText;
+    switch (clockMode) {
+        case 1:  clockText = "OUT   "; break;
+        case 2:  clockText = "IN 1/1"; break;
+        case 3:  clockText = "IN 1/2"; break;
+        case 4:  clockText = "IN 1*2"; break;
+        default: clockText = "OFF   "; break;
+    }
+    int16_t clockValWidth = 36;
     bool clockSelected = (currentOption == 0);
 
     if (clockSelected && optionActive) {
-        display.fillRect(48, y1 - 1, valWidth, 9, SSD1306_WHITE);
+        display.fillRect(48, y1 - 1, clockValWidth, 9, SSD1306_WHITE);
         display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
     } else if (clockSelected) {
-        display.drawRect(48, y1 - 1, valWidth, 9, SSD1306_WHITE);
+        display.drawRect(48, y1 - 1, clockValWidth, 9, SSD1306_WHITE);
     }
     display.setCursor(50, y1);
     display.print(clockText);
     display.setTextColor(SSD1306_WHITE);
 
-    // Option 1: Clean Loop
+    // Option 1: Clean Loop (still ON/OFF, narrower box)
     int16_t y2 = 23;
     display.setCursor(0, y2);
     display.print("ClnLP:");
 
     const char* loopText = cleanLoopEnabled ? "ON " : "OFF";
+    int16_t loopValWidth = 18;
     bool loopSelected = (currentOption == 1);
 
     if (loopSelected && optionActive) {
-        display.fillRect(48, y2 - 1, valWidth, 9, SSD1306_WHITE);
+        display.fillRect(48, y2 - 1, loopValWidth, 9, SSD1306_WHITE);
         display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
     } else if (loopSelected) {
-        display.drawRect(48, y2 - 1, valWidth, 9, SSD1306_WHITE);
+        display.drawRect(48, y2 - 1, loopValWidth, 9, SSD1306_WHITE);
     }
     display.setCursor(50, y2);
     display.print(loopText);

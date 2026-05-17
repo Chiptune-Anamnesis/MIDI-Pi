@@ -90,6 +90,12 @@ public:
     void onExternalClockTick();
     void resetExternalSyncTicks();
     uint32_t getExternalSyncTicks() { return externalSyncTicks; }
+    // Tick advancement divisor for slave mode. Each incoming 0xF8 advances
+    // ticksElapsed by ticksPerQuarter / divisor file ticks. Default 24 = 1×
+    // (one PPQN_24 pulse per advance). 48 = half-time (file plays at 0.5×
+    // master rate); 12 = double-time (file plays at 2× master rate).
+    void setExternalClockDivisor(uint8_t d) { if (d > 0) externalClockDivisor = d; }
+    uint8_t getExternalClockDivisor() { return externalClockDivisor; }
     // Position getters used to compute slave-mode display time externally
     // (without mutating the player's internal microsecondsPerTick).
     uint32_t getCurrentTicks() { return ticksElapsed; }
@@ -168,6 +174,7 @@ private:
     // Slave mode (clock IN)
     volatile bool useExternalClock;
     volatile uint32_t externalSyncTicks;  // count of 0xF8 pulses since last reset
+    volatile uint8_t externalClockDivisor;  // 24=1×, 48=½×, 12=2×
 
     // Smoothed master-tempo measurement: ring buffer of the last 24 pulse-to-
     // pulse intervals (1 quarter note's worth at any tempo) → averaged into

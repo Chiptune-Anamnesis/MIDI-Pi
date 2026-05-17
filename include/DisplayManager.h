@@ -50,7 +50,8 @@ struct PlaybackInfo {
     PlaybackMode playbackMode; // Playback mode
     uint8_t velocityScale;   // Velocity scale (1-100)
     uint16_t sysexCount;     // Number of SysEx messages (for MT-32 indication)
-    bool externalClockMode;  // True = slave mode → render BPM as "CLK IN", time uses committed master tempo
+    bool externalClockMode;  // True = slave mode → render BPM as "IN ...", time uses committed master tempo
+    uint8_t externalClockRate;  // 0 = ½×, 1 = 1×, 2 = 2× (only meaningful when externalClockMode is true)
 };
 
 class DisplayManager {

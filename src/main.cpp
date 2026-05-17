@@ -420,10 +420,30 @@ bool& justActivatedOption = appState.justActivatedOption;
 // MIDI Clock mode (file-scope enum). Stored as uint8_t in appState for
 // stable settings serialization.
 enum ClockMode : uint8_t {
-    CLOCK_MODE_OFF = 0,
-    CLOCK_MODE_OUT = 1,  // master — emit 0xF8 from player
-    CLOCK_MODE_IN  = 2   // slave — drive player from incoming 0xF8
+    CLOCK_MODE_OFF       = 0,
+    CLOCK_MODE_OUT       = 1,  // master — emit 0xF8 from player
+    CLOCK_MODE_IN        = 2,  // slave 1× — drive player from incoming 0xF8
+    CLOCK_MODE_IN_HALF   = 3,  // slave ½× — file plays half master rate
+    CLOCK_MODE_IN_DOUBLE = 4   // slave 2× — file plays double master rate
 };
+static constexpr uint8_t CLOCK_MODE_COUNT = 5;
+
+// True for any IN-* slave variant.
+static inline bool isClockModeIn(uint8_t m) {
+    return m == CLOCK_MODE_IN || m == CLOCK_MODE_IN_HALF || m == CLOCK_MODE_IN_DOUBLE;
+}
+// Slave-mode tick advancement divisor: 24=1×, 48=½×, 12=2×.
+static inline uint8_t clockModeDivisor(uint8_t m) {
+    if (m == CLOCK_MODE_IN_HALF)   return 48;
+    if (m == CLOCK_MODE_IN_DOUBLE) return 12;
+    return 24;
+}
+// Master-BPM → effective-BPM scale factor for the duration display.
+static inline float clockModeRateFactor(uint8_t m) {
+    if (m == CLOCK_MODE_IN_HALF)   return 0.5f;
+    if (m == CLOCK_MODE_IN_DOUBLE) return 2.0f;
+    return 1.0f;
+}
 
 // Slave-mode "committed" master BPM. Updates only when the player's smoothed
 // measured BPM has drifted >10 BPM from this value, so the duration display
@@ -435,9 +455,10 @@ static float g_committedSlaveBPM = 0.0f;
 // the setting and once at boot after settings load.
 static void applyClockMode() {
     bool out = (clockMode == CLOCK_MODE_OUT);
-    bool in  = (clockMode == CLOCK_MODE_IN);
+    bool in  = isClockModeIn(clockMode);
     player.setClockEnabled(out);
     player.setUseExternalClock(in);
+    player.setExternalClockDivisor(clockModeDivisor(clockMode));
     midiIn.setClockInEnabled(in);
     // Switching INTO slave mode while playing? Stop — slaves wait for the
     // master's 0xFA before producing audio.
@@ -2285,7 +2306,7 @@ void handleClockSettingsMode(Button btn) {
             if (clockOptionActive) {
                 // Active - cycle current option's value
                 if (currentClockOption == CLOCK_OPTION_ENABLED) {
-                    clockMode = (clockMode + 1) % 3;
+                    clockMode = (clockMode + 1) % CLOCK_MODE_COUNT;
                     applyClockMode();
                 } else if (currentClockOption == CLOCK_OPTION_CLEAN_LOOP) {
                     cleanLoopEnabled = !cleanLoopEnabled;
@@ -2302,7 +2323,7 @@ void handleClockSettingsMode(Button btn) {
         case BTN_LEFT:
             if (clockOptionActive) {
                 if (currentClockOption == CLOCK_OPTION_ENABLED) {
-                    clockMode = (clockMode + 2) % 3;  // -1 mod 3
+                    clockMode = (clockMode + CLOCK_MODE_COUNT - 1) % CLOCK_MODE_COUNT;
                     applyClockMode();
                 } else if (currentClockOption == CLOCK_OPTION_CLEAN_LOOP) {
                     cleanLoopEnabled = !cleanLoopEnabled;
@@ -2555,7 +2576,10 @@ void updateDisplay() {
                 {
                     ScopedMutex lock(&playerMutex);
                     info.targetBPM = targetBPM;  // Display user's target BPM
-                    info.externalClockMode = (clockMode == CLOCK_MODE_IN);
+                    info.externalClockMode = isClockModeIn(clockMode);
+                    info.externalClockRate = (clockMode == CLOCK_MODE_IN_HALF)   ? 0
+                                            : (clockMode == CLOCK_MODE_IN_DOUBLE) ? 2
+                                                                                  : 1;
 
                     MidiFileInfo fileInfo = player.getFileInfo();
                     info.timeSignatureNum = fileInfo.numerator;
@@ -2570,9 +2594,10 @@ void updateDisplay() {
                     // the last committed value, so the duration display
                     // settles on a steady number instead of wiggling. Then
                     // compute the displayed times directly from the committed
-                    // BPM, without touching the player's internal timing
-                    // state — keeps tempo display non-invasive to playback.
-                    if (clockMode == CLOCK_MODE_IN) {
+                    // BPM (scaled by the rate factor for half/double-time),
+                    // without touching the player's internal timing state —
+                    // keeps tempo display non-invasive to playback.
+                    if (isClockModeIn(clockMode)) {
                         float measured = player.getMeasuredExternalBPM();
                         if (measured > 0.0f) {
                             if (g_committedSlaveBPM == 0.0f) {
@@ -2587,7 +2612,8 @@ void updateDisplay() {
                         if (g_committedSlaveBPM > 0.0f && fileInfo.ticksPerQuarter > 0) {
                             uint32_t curTicks = player.getCurrentTicks();
                             uint32_t totTicks = player.getParser().getFileLengthTicks();
-                            float denom = g_committedSlaveBPM * (float)fileInfo.ticksPerQuarter;
+                            float effectiveBPM = g_committedSlaveBPM * clockModeRateFactor(clockMode);
+                            float denom = effectiveBPM * (float)fileInfo.ticksPerQuarter;
                             info.currentTime = (uint32_t)(((float)curTicks * 60000.0f) / denom);
                             info.totalTime  = (uint32_t)(((float)totTicks * 60000.0f) / denom);
                         } else {
@@ -3151,7 +3177,7 @@ bool loadGlobalSettings() {
             midiIn.setRemoteChannel(midiRemoteChannel);
         } else if (strncmp(line, "CLOCK_MODE=", 11) == 0) {
             int v = atoi(line + 11);
-            if (v < 0 || v > 2) v = 0;
+            if (v < 0 || v >= (int)CLOCK_MODE_COUNT) v = 0;
             clockMode = (uint8_t)v;
             // applyClockMode() is called once at end of setup() after the
             // settings file is parsed, so the player + midiIn pick up the

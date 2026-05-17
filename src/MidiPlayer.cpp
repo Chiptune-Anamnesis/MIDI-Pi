@@ -27,6 +27,7 @@ MidiPlayer::MidiPlayer(MidiOutput* output) {
     // Slave mode (clock IN)
     useExternalClock = false;
     externalSyncTicks = 0;
+    externalClockDivisor = 24;  // default 1× sync
     lastSyncTickMicros = 0;
     syncIntervalSum = 0;
     syncIntervalIdx = 0;
@@ -328,11 +329,14 @@ void MidiPlayer::update() {
 
     // Tick advancement: pick external (slave) or internal (time-based) source
     if (useExternalClock) {
-        // Slave mode: each 0xF8 pulse = 1/24 quarter = ticksPerQuarter/24 file ticks.
-        // Snap ticksElapsed forward to wherever the master's clock has us.
+        // Slave mode: each 0xF8 pulse advances by ticksPerQuarter/divisor file
+        // ticks. divisor=24 → 1× master rate (one PPQN_24 per pulse); 48 →
+        // half-time; 12 → double-time. See setExternalClockDivisor().
         MidiFileInfo info = parser.getFileInfo();
         if (info.ticksPerQuarter == 0) return;  // file not loaded
-        uint32_t targetTicks = ((uint64_t)externalSyncTicks * info.ticksPerQuarter) / 24;
+        uint8_t div = externalClockDivisor;
+        if (div == 0) div = 24;  // belt-and-suspenders
+        uint32_t targetTicks = ((uint64_t)externalSyncTicks * info.ticksPerQuarter) / div;
         if (targetTicks > ticksElapsed) {
             ticksElapsed = targetTicks;
         }

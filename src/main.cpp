@@ -10,6 +10,9 @@
 #include "InputHandler.h"
 #include "RAII.h"
 
+// Firmware build identifier — shown on the boot splash.
+#define FW_VERSION "1.4.6"
+
 // Global objects
 SdFat sd;
 MidiOutput midiOut;
@@ -529,7 +532,7 @@ void setup() {
         }
     }
 
-    display.showMessage("MIDI-PI", "Initializing...");
+    display.showMessage("MIDI-PI " FW_VERSION, "Initializing...");
     delay(1000);
 
     // Initialize SD card
@@ -543,9 +546,11 @@ void setup() {
     pinMode(SD_CS_PIN, OUTPUT);
     digitalWrite(SD_CS_PIN, HIGH);
 
-    // Try 12 MHz for balance of speed and stability
-    // Falls back to slower speeds if initialization fails
-    if (!sd.begin(SD_CS_PIN, SD_SCK_HZ(12000000))) {
+    // 4 MHz — safest SPI speed for the pickiest SD-card controllers.
+    // Some bargain 8 GB cards have weak SPI drivers and tight write-timing
+    // tolerances; reads survive at 6 MHz but writes still drop bytes.
+    // 4 MHz handles those too at the cost of slower file scans/loads.
+    if (!sd.begin(SD_CS_PIN, SD_SCK_HZ(4000000))) {
         display.showError("SD Card Failed!");
         Serial.println("ERROR: SD card initialization failed!");
         while (1) {

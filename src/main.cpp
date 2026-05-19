@@ -546,11 +546,11 @@ void setup() {
     pinMode(SD_CS_PIN, OUTPUT);
     digitalWrite(SD_CS_PIN, HIGH);
 
-    // 4 MHz — safest SPI speed for the pickiest SD-card controllers.
-    // Some bargain 8 GB cards have weak SPI drivers and tight write-timing
-    // tolerances; reads survive at 6 MHz but writes still drop bytes.
-    // 4 MHz handles those too at the cost of slower file scans/loads.
-    if (!sd.begin(SD_CS_PIN, SD_SCK_HZ(4000000))) {
+    // 8 MHz — broad-compatibility SPI speed for the SD card. Reliable with
+    // mainstream-brand cards and most marginal bargain cards; cards that
+    // can't run at 8 MHz are fundamentally unusable for embedded SPI use.
+    // Plenty of bandwidth: ~1 MB/s sustained, vs ~4 KB/s MIDI data rate.
+    if (!sd.begin(SD_CS_PIN, SD_SCK_HZ(8000000))) {
         display.showError("SD Card Failed!");
         Serial.println("ERROR: SD card initialization failed!");
         while (1) {
